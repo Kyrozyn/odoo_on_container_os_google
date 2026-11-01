@@ -1,9 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo>
-    <!-- Menu inside Settings > Technical, visible ONLY in developer mode (debug=1) -->
+    <!-- Menu inside Settings > Technical > Database Structure (visible only in debug=1) -->
+    <menuitem id="menu_execute_sql_db"
+              name="Execute SQL"
+              action="execute_sql.action_execute_sql"
+              parent="base.next_id_9"
+              groups="base.group_no_one"
+              sequence="90"/>
+
+    <!-- Also directly under Settings > Technical root -->
     <menuitem id="menu_execute_sql_root"
               name="Execute SQL"
-              action="action_execute_sql"
+              action="execute_sql.action_execute_sql"
               parent="base.menu_custom"
               groups="base.group_no_one"
               sequence="999"/>
