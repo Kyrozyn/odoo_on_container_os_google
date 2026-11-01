@@ -4,7 +4,7 @@
 set -e
 
 echo "=========================================="
-echo "==> 1. Membuat Struktur Direktori Odoo 20"
+echo "==> 1. Membuat Struktur Direktori"
 echo "=========================================="
 sudo mkdir -p /var/odoo/postgres_data
 sudo mkdir -p /var/odoo/data
