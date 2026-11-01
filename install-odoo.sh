@@ -2,7 +2,43 @@
 set -e
 
 echo "=========================================="
-echo "==> 0. Menyiapkan Compose Wrapper (Google COS)"
+echo "==> 0. Deteksi Spesifikasi Sistem & Resource"
+echo "=========================================="
+
+# Baca total RAM dalam Megabytes (MB)
+TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
+# Baca jumlah vCPU
+CPU_CORES=$(nproc)
+
+echo "Terdeteksi: ${CPU_CORES} vCPU | RAM: ${TOTAL_RAM_MB} MB"
+
+# Hitung kalkulasi PostgreSQL dinamis berbasis RAM
+PG_SHARED_BUFFERS="$((TOTAL_RAM_MB / 4))MB"
+PG_EFFECTIVE_CACHE="$((TOTAL_RAM_MB / 2))MB"
+PG_MAINTENANCE_WORK_MEM="$((TOTAL_RAM_MB / 16))MB"
+[ "$((TOTAL_RAM_MB / 16))" -lt 32 ] && PG_MAINTENANCE_WORK_MEM="32MB"
+PG_WORK_MEM="4MB"
+PG_MAX_CONN="50"
+
+# Hitung kalkulasi Odoo Workers & RAM Limits
+if [ "$TOTAL_RAM_MB" -le 1500 ]; then
+    # e2-micro (1GB RAM) mode hemat (threaded)
+    ODOO_WORKERS=0
+    LIMIT_MEM_SOFT=671088640   # 640 MB
+    LIMIT_MEM_HARD=805306368   # 768 MB
+else
+    # Untuk VM dengan RAM > 1.5GB
+    ODOO_WORKERS=$(( (CPU_CORES * 2) + 1 ))
+    [ "$ODOO_WORKERS" -gt 4 ] && ODOO_WORKERS=4
+    LIMIT_MEM_SOFT=805306368   # 768 MB
+    LIMIT_MEM_HARD=1073741824  # 1 GB
+fi
+
+echo "Konfigurasi PostgreSQL: shared_buffers=${PG_SHARED_BUFFERS}, work_mem=${PG_WORK_MEM}"
+echo "Konfigurasi Odoo: workers=${ODOO_WORKERS}, soft_limit=${LIMIT_MEM_SOFT}"
+
+echo "=========================================="
+echo "==> 1. Menyiapkan Compose Wrapper (Google COS)"
 echo "=========================================="
 
 compose_cmd() {
@@ -16,9 +52,10 @@ compose_cmd() {
 docker pull docker/compose:latest > /dev/null
 
 echo "=========================================="
-echo "==> 1. Menyiapkan Struktur Direktori"
+echo "==> 2. Menyiapkan Struktur Direktori & Permission"
 echo "=========================================="
 sudo mkdir -p /var/odoo/postgres_data
+sudo mkdir -p /var/odoo/postgres_config
 sudo mkdir -p /var/odoo/data
 sudo mkdir -p /var/odoo/addons
 sudo mkdir -p /var/odoo/config
@@ -26,14 +63,14 @@ sudo mkdir -p /var/odoo/nginx_conf
 sudo mkdir -p /var/odoo/letsencrypt
 sudo mkdir -p /var/odoo/certbot_www
 
-# Bersihkan container lama jika ada
 docker stop odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
 docker rm odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
 
 echo "=========================================="
-echo "==> 2. Menyiapkan File odoo.conf (Binding 0.0.0.0)"
+echo "==> 3. Generate Konfigurasi Teroptimasi"
 echo "=========================================="
-sudo rm -rf /var/odoo/config/odoo.conf
+
+# File odoo.conf teroptimasi
 sudo tee /var/odoo/config/odoo.conf > /dev/null <<EOF
 [options]
 admin_passwd = admin
@@ -43,12 +80,31 @@ db_password = tAIre2vRTXDgRFSlqUy2kBFF
 http_interface = 0.0.0.0
 proxy_mode = True
 addons_path = /usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons
+
+; Resource limits dinamis
+workers = ${ODOO_WORKERS}
+limit_memory_soft = ${LIMIT_MEM_SOFT}
+limit_memory_hard = ${LIMIT_MEM_HARD}
+limit_time_cpu = 120
+limit_time_real = 240
+max_cron_threads = 1
+EOF
+
+# File postgresql.conf custom
+sudo tee /var/odoo/postgres_config/custom.conf > /dev/null <<EOF
+shared_buffers = ${PG_SHARED_BUFFERS}
+effective_cache_size = ${PG_EFFECTIVE_CACHE}
+maintenance_work_mem = ${PG_MAINTENANCE_WORK_MEM}
+work_mem = ${PG_WORK_MEM}
+max_connections = ${PG_MAX_CONN}
+random_page_cost = 1.1
+checkpoint_completion_target = 0.9
 EOF
 
 sudo chmod -R 777 /var/odoo
 
 echo "=========================================="
-echo "==> 3. Parameter Domain & Email"
+echo "==> 4. Parameter Domain & Email"
 echo "=========================================="
 read -p "Masukkan nama domain (default: andreascloud.my.id): " ODOO_DOMAIN
 ODOO_DOMAIN=${ODOO_DOMAIN:-andreascloud.my.id}
@@ -56,9 +112,7 @@ ODOO_DOMAIN=${ODOO_DOMAIN:-andreascloud.my.id}
 read -p "Masukkan email SSL (default: arr@e.email): " CERTBOT_EMAIL
 CERTBOT_EMAIL=${CERTBOT_EMAIL:-arr@e.email}
 
-echo "=========================================="
-echo "==> 4. Tahap Awal: Nginx HTTP Port 80 (Untuk Certbot Challenge)"
-echo "=========================================="
+# Konfigurasi Nginx sementara untuk Challenge Let's Encrypt
 sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
 server {
     listen 80;
@@ -88,8 +142,10 @@ services:
       - POSTGRES_PASSWORD=tAIre2vRTXDgRFSlqUy2kBFF
       - POSTGRES_USER=odoo
       - PGDATA=/var/lib/postgresql/data/pgdata
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf -c include_dir=/etc/postgresql/conf.d
     volumes:
       - /var/odoo/postgres_data:/var/lib/postgresql/data/pgdata
+      - /var/odoo/postgres_config:/etc/postgresql/conf.d:ro
     restart: always
 
   odoo:
@@ -132,7 +188,6 @@ compose_cmd up -d nginx
 echo "=========================================="
 echo "==> 6. Menerbitkan Sertifikat SSL (Let's Encrypt)"
 echo "=========================================="
-# Cek apakah sertifikat sudah pernah dibuat sebelumnya
 if [ ! -f "/var/odoo/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem" ]; then
     echo "Meminta sertifikat SSL baru dari Let's Encrypt..."
     docker run -it --rm \
@@ -145,7 +200,7 @@ if [ ! -f "/var/odoo/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem" ]; then
       -d "${ODOO_DOMAIN}"
     echo "Sertifikat SSL berhasil diterbitkan!"
 else
-    echo "Sertifikat SSL untuk domain ${ODOO_DOMAIN} sudah ada, melewati request baru."
+    echo "Sertifikat SSL untuk domain ${ODOO_DOMAIN} sudah ada."
 fi
 
 echo "=========================================="
@@ -204,6 +259,11 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
+    # Buffer Nginx hemat RAM
+    client_max_body_size 64M;
+    proxy_buffers 16 1024k;
+    proxy_buffer_size 1024k;
+
     gzip_types text/css text/less text/plain text/xml application/xml application/json application/javascript;
     gzip on;
 }
@@ -218,5 +278,5 @@ docker exec odoo_nginx nginx -s reload
 echo ""
 echo "=========================================="
 echo "Instalasi selesai!"
-echo "Akses Odoo Anda di: https://${ODOO_DOMAIN}"
+echo "Akses Odoo di: https://${ODOO_DOMAIN}"
 echo "=========================================="
