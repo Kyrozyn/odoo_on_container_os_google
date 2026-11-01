@@ -43,7 +43,6 @@
                             <field name="result_html"
                                    widget="html"
                                    readonly="1"
-                                   options="{'cssReadonly': false}"
                                    nolabel="1"/>
                         </page>
                     </notebook>
