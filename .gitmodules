@@ -1,0 +1,4 @@
+[submodule "addons/web"]
+	path = addons/web
+	url = https://github.com/OCA/web.git
+	branch = 20.0
