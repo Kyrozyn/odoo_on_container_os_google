@@ -19,7 +19,7 @@ Allows system administrators to run raw PostgreSQL queries directly within the O
     'license': 'LGPL-3',
     'depends': ['base'],
     'data': [
-        'security/ir.model.access.csv',
+        'security/ir.access.csv',
         'views/execute_sql_views.xml',
         'views/execute_sql_menus.xml',
     ],
