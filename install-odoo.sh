@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# Dapatkan lokasi folder direktori script ini berada (root repo Git Anda)
+# Dapatkan lokasi folder repositori Git lokal
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_ADDONS_DIR="${SCRIPT_DIR}/addons"
 
@@ -15,9 +15,25 @@ CPU_CORES=$(nproc)
 echo "Terdeteksi: ${CPU_CORES} vCPU | RAM: ${TOTAL_RAM_MB} MB"
 echo "Direktori Addons Git: ${LOCAL_ADDONS_DIR}"
 
-# Pastikan folder addons lokal ada dan permission terbaca oleh container
 mkdir -p "${LOCAL_ADDONS_DIR}"
 sudo chmod -R 777 "${LOCAL_ADDONS_DIR}"
+
+# Pindai subfolder modul yang memuat __manifest__.py secara otomatis
+echo "Memindai modul Odoo dan subfoldernya..."
+EXTRA_PATHS=$(find "${LOCAL_ADDONS_DIR}" -type f -name "__manifest__.py" -exec dirname {} + 2>/dev/null \
+    | xargs -I {} dirname {} 2>/dev/null \
+    | sort -u \
+    | sed "s|${LOCAL_ADDONS_DIR}|/mnt/extra-addons|g" \
+    | tr '\n' ',' \
+    | sed 's/,$//')
+
+# Susun addons_path lengkap
+FINAL_ADDONS_PATH="/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons"
+if [ -n "$EXTRA_PATHS" ]; then
+    FINAL_ADDONS_PATH="${FINAL_ADDONS_PATH},${EXTRA_PATHS}"
+fi
+
+echo "Addons Path terpasang: ${FINAL_ADDONS_PATH}"
 
 # Hitung konfigurasi PostgreSQL dinamis
 PG_SHARED_BUFFERS="$((TOTAL_RAM_MB / 4))MB"
@@ -27,7 +43,7 @@ PG_MAINTENANCE_WORK_MEM="$((TOTAL_RAM_MB / 16))MB"
 PG_WORK_MEM="4MB"
 PG_MAX_CONN="50"
 
-# Odoo worker & mem limit untuk spek kecil
+# Odoo worker & memory limits untuk e2-micro / spek kecil
 if [ "$TOTAL_RAM_MB" -le 1500 ]; then
     ODOO_WORKERS=0
     LIMIT_MEM_SOFT=671088640
@@ -78,7 +94,7 @@ db_user = odoo
 db_password = tAIre2vRTXDgRFSlqUy2kBFF
 http_interface = 0.0.0.0
 proxy_mode = True
-addons_path = /usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons
+addons_path = ${FINAL_ADDONS_PATH}
 workers = ${ODOO_WORKERS}
 limit_memory_soft = ${LIMIT_MEM_SOFT}
 limit_memory_hard = ${LIMIT_MEM_HARD}
@@ -281,5 +297,5 @@ compose_cmd up -d
 docker exec odoo_nginx nginx -s reload
 
 echo ""
-echo "Selesai. Addons dari ${LOCAL_ADDONS_DIR} telah terhubung ke /mnt/extra-addons."
-echo "Pantau log Odoo via: docker logs -f odoo_app"
+echo "Selesai. Modul dari subfolder addons telah berhasil dipetakan ke Odoo."
+echo "Pantau status kontainer via: docker logs -f odoo_app"
