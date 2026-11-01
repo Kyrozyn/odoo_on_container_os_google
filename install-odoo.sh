@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+# Dapatkan lokasi folder direktori script ini berada (root repo Git Anda)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_ADDONS_DIR="${SCRIPT_DIR}/addons"
+
 echo "=========================================="
 echo "==> 0. Deteksi Spesifikasi Sistem & Resource"
 echo "=========================================="
@@ -9,6 +13,11 @@ TOTAL_RAM_MB=$(free -m | awk '/^Mem:/{print $2}')
 CPU_CORES=$(nproc)
 
 echo "Terdeteksi: ${CPU_CORES} vCPU | RAM: ${TOTAL_RAM_MB} MB"
+echo "Direktori Addons Git: ${LOCAL_ADDONS_DIR}"
+
+# Pastikan folder addons lokal ada dan permission terbaca oleh container
+mkdir -p "${LOCAL_ADDONS_DIR}"
+sudo chmod -R 777 "${LOCAL_ADDONS_DIR}"
 
 # Hitung konfigurasi PostgreSQL dinamis
 PG_SHARED_BUFFERS="$((TOTAL_RAM_MB / 4))MB"
@@ -38,6 +47,7 @@ compose_cmd() {
     docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
         -v /var/odoo:/var/odoo \
+        -v "${LOCAL_ADDONS_DIR}:${LOCAL_ADDONS_DIR}" \
         -w /var/odoo \
         docker/compose:latest "$@"
 }
@@ -49,7 +59,6 @@ echo "==> 2. Menyiapkan Direktori & Permission"
 echo "=========================================="
 sudo mkdir -p /var/odoo/postgres_data
 sudo mkdir -p /var/odoo/data
-sudo mkdir -p /var/odoo/addons
 sudo mkdir -p /var/odoo/config
 sudo mkdir -p /var/odoo/nginx_conf
 sudo mkdir -p /var/odoo/letsencrypt
@@ -150,7 +159,7 @@ services:
     volumes:
       - /var/odoo/data:/var/lib/odoo
       - /var/odoo/config/odoo.conf:/etc/odoo/odoo.conf
-      - /var/odoo/addons:/mnt/extra-addons
+      - ${LOCAL_ADDONS_DIR}:/mnt/extra-addons
     networks:
       - odoo-net
     restart: always
@@ -272,5 +281,5 @@ compose_cmd up -d
 docker exec odoo_nginx nginx -s reload
 
 echo ""
-echo "Selesai. Tunggu 15-20 detik lalu cek status Odoo:"
-echo "docker logs -f odoo_app"
+echo "Selesai. Addons dari ${LOCAL_ADDONS_DIR} telah terhubung ke /mnt/extra-addons."
+echo "Pantau log Odoo via: docker logs -f odoo_app"
