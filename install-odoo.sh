@@ -1,13 +1,10 @@
 #!/bin/bash
-
-# Berhenti otomatis jika ada perintah yang gagal
 set -e
 
 echo "=========================================="
-echo "==> 0. Menyiapkan Docker Compose Wrapper untuk Google COS"
+echo "==> 0. Menyiapkan Compose Wrapper (Google COS)"
 echo "=========================================="
 
-# Fungsi wrapper pengganti docker-compose biner agar terhindar dari noexec di /var
 compose_cmd() {
     docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
@@ -16,11 +13,10 @@ compose_cmd() {
         docker/compose:latest "$@"
 }
 
-echo "Memverifikasi Docker daemon & Compose image..."
 docker pull docker/compose:latest > /dev/null
 
 echo "=========================================="
-echo "==> 1. Membuat Struktur Direktori Odoo di /var"
+echo "==> 1. Menyiapkan Struktur Direktori & Permission"
 echo "=========================================="
 sudo mkdir -p /var/odoo/postgres_data
 sudo mkdir -p /var/odoo/data
@@ -30,31 +26,37 @@ sudo mkdir -p /var/odoo/nginx_conf
 sudo mkdir -p /var/odoo/letsencrypt
 sudo mkdir -p /var/odoo/certbot_www
 
-echo "==> 2. Menyiapkan File odoo.conf..."
-if [ -d "/var/odoo/config/odoo.conf" ]; then
-    sudo rm -rf /var/odoo/config/odoo.conf
-fi
+# Hentikan container lama & hapus volume postgres lama jika masih format PG15
+docker stop odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
+docker rm odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
+sudo rm -rf /var/odoo/postgres_data/*
 
-if [ ! -f "/var/odoo/config/odoo.conf" ]; then
-    sudo touch /var/odoo/config/odoo.conf
-    sudo tee /var/odoo/config/odoo.conf > /dev/null <<EOF
+echo "=========================================="
+echo "==> 2. Menyiapkan File odoo.conf (Binding 0.0.0.0)"
+echo "=========================================="
+sudo rm -rf /var/odoo/config/odoo.conf
+sudo tee /var/odoo/config/odoo.conf > /dev/null <<EOF
 [options]
 admin_passwd = admin
 db_host = db
 db_user = odoo
 db_password = tAIre2vRTXDgRFSlqUy2kBFF
+http_interface = 0.0.0.0
+proxy_mode = True
 addons_path = /usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons
 EOF
-fi
 
-echo "==> 3. Mengatur Izin Direktori..."
-sudo chmod -R 755 /var/odoo
+# Permission 777 agar UID container (odoo & postgres) bisa baca/tulis di /var
+sudo chmod -R 777 /var/odoo
 
 echo "=========================================="
-echo "==> 4. Konfigurasi Nginx & Domain"
+echo "==> 3. Konfigurasi Nginx & Domain"
 echo "=========================================="
-read -p "Masukkan nama domain Anda (contoh: odoo.domainanda.com): " ODOO_DOMAIN
-read -p "Masukkan email Anda untuk sertifikat SSL: " CERTBOT_EMAIL
+read -p "Masukkan nama domain (default: andreascloud.my.id): " ODOO_DOMAIN
+ODOO_DOMAIN=${ODOO_DOMAIN:-andreascloud.my.id}
+
+read -p "Masukkan email SSL (default: arr@e.email): " CERTBOT_EMAIL
+CERTBOT_EMAIL=${CERTBOT_EMAIL:-arr@e.email}
 
 sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
 upstream odoo {
@@ -94,14 +96,14 @@ server {
 EOF
 
 echo "=========================================="
-echo "==> 5. Membuat docker-compose.yml"
+echo "==> 4. Menyiapkan docker-compose.yml (Postgres 16)"
 echo "=========================================="
 sudo tee /var/odoo/docker-compose.yml > /dev/null <<EOF
 version: '3.8'
 
 services:
   db:
-    image: postgres:15
+    image: postgres:16
     container_name: odoo_db
     environment:
       - POSTGRES_DB=postgres
@@ -147,10 +149,10 @@ services:
 EOF
 
 echo "=========================================="
-echo "==> 6. Menjalankan Container"
+echo "==> 5. Menjalankan Container Stack"
 echo "=========================================="
 compose_cmd up -d
 
 echo ""
-echo "Status container aktif:"
-compose_cmd ps
+echo "Tunggu sekitar 15-30 detik untuk inisialisasi awal database, lalu cek:"
+echo "docker logs -f odoo_app"
