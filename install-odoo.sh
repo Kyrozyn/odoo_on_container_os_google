@@ -4,6 +4,35 @@
 set -e
 
 echo "=========================================="
+echo "==> 0. Memeriksa & Menginstal Docker Compose"
+echo "=========================================="
+
+# Cek apakah docker-compose (binary) atau 'docker compose' (plugin) sudah ada
+if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+    echo "Docker Compose tidak ditemukan. Menginstal Docker Compose..."
+    
+    # Ambil arsitektur sistem (x86_64, aarch64, dll)
+    ARCH=$(uname -m)
+    
+    # Unduh binary resmi Docker Compose dari GitHub
+    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}" -o /usr/local/bin/docker-compose
+    
+    # Berikan izin eksekusi
+    sudo chmod +x /usr/local/bin/docker-compose
+    
+    echo "Docker Compose berhasil diinstal!"
+else
+    echo "Docker Compose sudah terinstal."
+fi
+
+# Tentukan perintah compose yang akan digunakan (prioritaskan plugin bawaan docker, atau binary lama)
+if docker compose version &> /dev/null; then
+    COMPOSE_CMD="docker compose"
+else
+    COMPOSE_CMD="docker-compose"
+fi
+
+echo "=========================================="
 echo "==> 1. Membuat Struktur Direktori Odoo 20"
 echo "=========================================="
 sudo mkdir -p /var/odoo/postgres_data
@@ -84,35 +113,4 @@ location / {
 
     proxy_set_header Host \$host;
     proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-}
-
-location /longpolling {
-    proxy_pass http://odoo-chat;
-
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-}
-
-gzip_types text/css text/scss text/plain text/xml application/xml application/json application/javascript;
-gzip on;
-}
-EOF
-
-# Perbarui file docker-compose.yml secara otomatis agar menyertakan email certbot
-if [ -f "docker-compose.yml" ]; then
-    # Mengganti baris CERTBOT_EMAIL= dengan email yang diinput user
-    sed -i "s|- CERTBOT_EMAIL=.*|- CERTBOT_EMAIL=${CERTBOT_EMAIL}|g" docker-compose.yml
-fi
-
-echo "=========================================="
-echo "==> 5. Menjalankan Docker Compose..."
-echo "=========================================="
-docker compose config > /dev/null
-sudo docker compose up -d
-
-echo "==> Selesai! Memeriksa status kontainer..."
-sudo docker compose ps
+    proxy_set_header X-Forwarded-
