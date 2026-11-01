@@ -98,7 +98,7 @@ workers = ${ODOO_WORKERS}
 limit_memory_soft = ${LIMIT_MEM_SOFT}
 limit_memory_hard = ${LIMIT_MEM_HARD}
 
-; 0 = Nonaktifkan timeout CPU & Real time (Unlimited)
+; Unlimited Timeout
 limit_time_cpu = 0
 limit_time_real = 0
 max_cron_threads = 1
@@ -260,9 +260,8 @@ server {
     ssl_certificate /etc/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${ODOO_DOMAIN}/privkey.pem;
 
-    # Timeout Nginx diset hingga 10 jam (36000 detik)
-    proxy_connect_timeout 36000s;
     proxy_read_timeout 36000s;
+    proxy_connect_timeout 36000s;
     proxy_send_timeout 36000s;
     send_timeout 36000s;
     keepalive_timeout 36000s;
@@ -300,5 +299,18 @@ echo "=========================================="
 compose_cmd up -d
 docker exec odoo_nginx nginx -s reload
 
+echo "=========================================="
+echo "==> 9. Memasang Dependensi Python (pip)"
+echo "=========================================="
+echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
+docker exec -u 0 odoo_app pip install --no-cache-dir openpyxl ofxparse qifparse
+
+echo "Merestart odoo_app agar dependensi Python aktif..."
+docker restart odoo_app
+
 echo ""
-echo "Selesai. Timeout Odoo & Nginx telah diset ke mode unlimited/maksimal."
+echo "=========================================="
+echo "Instalasi selesai!"
+echo "Dependensi 'openpyxl', 'ofxparse', dan 'qifparse' siap digunakan."
+echo "Akses Odoo di: https://${ODOO_DOMAIN}"
+echo "=========================================="
