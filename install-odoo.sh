@@ -4,42 +4,20 @@
 set -e
 
 echo "=========================================="
-echo "==> 0. Menyiapkan Docker Compose untuk Google COS"
+echo "==> 0. Menyiapkan Docker Compose Wrapper untuk Google COS"
 echo "=========================================="
 
-# Di COS, partisi /var bersifat writable & executable
-BIN_DIR="/var/bin"
-sudo mkdir -p "$BIN_DIR"
+# Fungsi wrapper pengganti docker-compose biner agar terhindar dari noexec di /var
+compose_cmd() {
+    docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v /var/odoo:/var/odoo \
+        -w /var/odoo \
+        docker/compose:latest "$@"
+}
 
-# Tambahkan /var/bin ke PATH untuk eksekusi script ini
-export PATH="$BIN_DIR:$PATH"
-
-# Persistensi PATH hanya ke user non-root asli (jika dijalankan via sudo)
-if [ -n "$SUDO_USER" ] && [ -d "/home/$SUDO_USER" ]; then
-    USER_BASHRC="/home/$SUDO_USER/.bashrc"
-    if ! grep -q 'export PATH="/var/bin:$PATH"' "$USER_BASHRC" 2>/dev/null; then
-        echo 'export PATH="/var/bin:$PATH"' >> "$USER_BASHRC"
-        echo "PATH berhasil ditambahkan ke $USER_BASHRC"
-    fi
-elif [ -w "$HOME/.bashrc" ]; then
-    if ! grep -q 'export PATH="/var/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null; then
-        echo 'export PATH="/var/bin:$PATH"' >> "$HOME/.bashrc"
-        echo "PATH berhasil ditambahkan ke $HOME/.bashrc"
-    fi
-fi
-
-# Cek apakah binary docker-compose sudah ada di /var/bin
-if [ ! -f "$BIN_DIR/docker-compose" ]; then
-    echo "Mengunduh binary Docker Compose ke $BIN_DIR..."
-    ARCH=$(uname -m)
-    sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-${ARCH}" -o "$BIN_DIR/docker-compose"
-    sudo chmod +x "$BIN_DIR/docker-compose"
-    echo "Docker Compose berhasil dipasang di $BIN_DIR/docker-compose"
-else
-    echo "Docker Compose sudah tersedia di $BIN_DIR/docker-compose."
-fi
-
-COMPOSE_CMD="$BIN_DIR/docker-compose"
+echo "Memverifikasi Docker daemon & Compose image..."
+docker pull docker/compose:latest > /dev/null
 
 echo "=========================================="
 echo "==> 1. Membuat Struktur Direktori Odoo di /var"
@@ -169,11 +147,10 @@ services:
 EOF
 
 echo "=========================================="
-echo "==> 6. Menjalankan Container (Docker Compose Up)"
+echo "==> 6. Menjalankan Container"
 echo "=========================================="
-cd /var/odoo
-sudo "$COMPOSE_CMD" up -d
+compose_cmd up -d
 
 echo ""
 echo "Status container aktif:"
-sudo "$COMPOSE_CMD" ps
+compose_cmd ps
