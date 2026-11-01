@@ -303,7 +303,7 @@ echo "=========================================="
 echo "==> 9. Memasang Dependensi Python (pip)"
 echo "=========================================="
 echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
-docker exec -u 0 odoo_app pip install --no-cache-dir openpyxl ofxparse qifparse
+docker exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
 
 echo "Merestart odoo_app agar dependensi Python aktif..."
 docker restart odoo_app
