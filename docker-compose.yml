@@ -1,8 +1,6 @@
-version: '3.8'
-
 services:
   db:
-    image: postgres:15-alpine
+    image: postgres:17-alpine
     container_name: odoo_postgres
     restart: always
     environment:
@@ -23,7 +21,7 @@ services:
       - /var/odoo/postgres_data:/var/lib/postgresql/data/pgdata
 
   odoo:
-    image: odoo:18.0
+    image: odoo:20.0
     container_name: odoo_web
     restart: always
     depends_on:
@@ -48,7 +46,7 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      - CERTBOT_EMAIL=
+      - CERTBOT_EMAIL=your-email@example.com
     volumes:
       - /var/odoo/nginx_conf:/etc/nginx/user_conf.d:ro
       - /var/odoo/letsencrypt:/etc/letsencrypt
