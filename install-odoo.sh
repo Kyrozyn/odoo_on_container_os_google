@@ -27,7 +27,6 @@ EXTRA_PATHS=$(find "${LOCAL_ADDONS_DIR}" -type f -name "__manifest__.py" -exec d
     | tr '\n' ',' \
     | sed 's/,$//')
 
-# Susun addons_path lengkap
 FINAL_ADDONS_PATH="/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons"
 if [ -n "$EXTRA_PATHS" ]; then
     FINAL_ADDONS_PATH="${FINAL_ADDONS_PATH},${EXTRA_PATHS}"
@@ -84,7 +83,7 @@ docker stop odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
 docker rm odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
 
 echo "=========================================="
-echo "==> 3. Menyiapkan odoo.conf"
+echo "==> 3. Menyiapkan odoo.conf (Unlimited Timeout)"
 echo "=========================================="
 sudo tee /var/odoo/config/odoo.conf > /dev/null <<EOF
 [options]
@@ -98,8 +97,10 @@ addons_path = ${FINAL_ADDONS_PATH}
 workers = ${ODOO_WORKERS}
 limit_memory_soft = ${LIMIT_MEM_SOFT}
 limit_memory_hard = ${LIMIT_MEM_HARD}
-limit_time_cpu = 120
-limit_time_real = 240
+
+; 0 = Nonaktifkan timeout CPU & Real time (Unlimited)
+limit_time_cpu = 0
+limit_time_real = 0
 max_cron_threads = 1
 EOF
 
@@ -228,7 +229,7 @@ else
 fi
 
 echo "=========================================="
-echo "==> 7. Mengaktifkan Nginx HTTPS (Port 443)"
+echo "==> 7. Mengaktifkan Nginx HTTPS (Timeout Maksimal)"
 echo "=========================================="
 sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
 upstream odoo {
@@ -259,9 +260,12 @@ server {
     ssl_certificate /etc/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${ODOO_DOMAIN}/privkey.pem;
 
-    proxy_read_timeout 720s;
-    proxy_connect_timeout 720s;
-    proxy_send_timeout 720s;
+    # Timeout Nginx diset hingga 10 jam (36000 detik)
+    proxy_connect_timeout 36000s;
+    proxy_read_timeout 36000s;
+    proxy_send_timeout 36000s;
+    send_timeout 36000s;
+    keepalive_timeout 36000s;
 
     access_log /var/log/nginx/odoo.access.log;
     error_log /var/log/nginx/odoo.error.log;
@@ -281,7 +285,7 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    client_max_body_size 64M;
+    client_max_body_size 256M;
     proxy_buffers 16 1024k;
     proxy_buffer_size 1024k;
 
@@ -297,5 +301,4 @@ compose_cmd up -d
 docker exec odoo_nginx nginx -s reload
 
 echo ""
-echo "Selesai. Modul dari subfolder addons telah berhasil dipetakan ke Odoo."
-echo "Pantau status kontainer via: docker logs -f odoo_app"
+echo "Selesai. Timeout Odoo & Nginx telah diset ke mode unlimited/maksimal."
