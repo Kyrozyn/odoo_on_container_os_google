@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="view_execute_sql_form" model="ir.ui.view">
+        <field name="name">execute.sql.form</field>
+        <field name="model">execute.sql</field>
+        <field name="arch" type="xml">
+            <form string="Execute Direct SQL" create="false" delete="false">
+                <header>
+                    <button name="action_execute"
+                            string="Execute Query"
+                            type="object"
+                            class="oe_highlight btn-primary"
+                            icon="fa-play"/>
+                    <button name="action_clear"
+                            string="Clear"
+                            type="object"
+                            class="btn-secondary"
+                            icon="fa-eraser"/>
+                </header>
+                <sheet>
+                    <div class="oe_title">
+                        <label for="name" string="Direct Database Query Tool"/>
+                        <h2><field name="name" readonly="1"/></h2>
+                    </div>
+                    <group string="SQL Statement">
+                        <field name="query"
+                               nolabel="1"
+                               placeholder="SELECT id, login, name, active FROM res_users ORDER BY id LIMIT 10;"
+                               style="font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-height: 120px; width: 100%;"/>
+                    </group>
+                    <group>
+                        <group string="Execution Options">
+                            <field name="max_rows"/>
+                            <field name="dry_run"/>
+                        </group>
+                        <group string="Execution Stats">
+                            <field name="row_count" readonly="1"/>
+                            <field name="execution_time" readonly="1"/>
+                        </group>
+                    </group>
+                    <notebook>
+                        <page string="Result" name="result">
+                            <field name="result_html"
+                                   widget="html"
+                                   readonly="1"
+                                   options="{'cssReadonly': false}"
+                                   nolabel="1"/>
+                        </page>
+                    </notebook>
+                </sheet>
+            </form>
+        </field>
+    </record>
+
+    <!-- Action Window -->
+    <record id="action_execute_sql" model="ir.actions.act_window">
+        <field name="name">Execute SQL</field>
+        <field name="res_model">execute.sql</field>
+        <field name="view_mode">form</field>
+        <field name="target">current</field>
+        <field name="view_id" ref="view_execute_sql_form"/>
+    </record>
+</odoo>

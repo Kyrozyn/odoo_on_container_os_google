@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <!-- Menu inside Settings > Technical, visible ONLY in developer mode (debug=1) -->
+    <menuitem id="menu_execute_sql_root"
+              name="Execute SQL"
+              action="action_execute_sql"
+              parent="base.menu_custom"
+              groups="base.group_no_one"
+              sequence="999"/>
+</odoo>
