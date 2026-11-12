@@ -305,12 +305,37 @@ echo "=========================================="
 echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
 docker exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
 
-echo "Merestart odoo_app agar dependensi Python aktif..."
+echo "=========================================="
+echo "==> 10. Update Semua Modul Odoo (-u all)"
+echo "=========================================="
+echo "Mendeteksi database Odoo aktif di PostgreSQL..."
+DB_LIST=$(docker exec odoo_db psql -U odoo -d postgres -tAc "SELECT datname FROM pg_database WHERE datistemplate = false AND datname != 'postgres';" 2>/dev/null || true)
+
+UPDATED_COUNT=0
+if [ -n "$DB_LIST" ]; then
+    for DB in $DB_LIST; do
+        IS_ODOO_DB=$(docker exec odoo_db psql -U odoo -d "$DB" -tAc "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module';" 2>/dev/null || true)
+        if [ "$IS_ODOO_DB" = "1" ]; then
+            echo "==> Menjalankan update semua modul (-u all) pada database: '${DB}'..."
+            docker exec -u odoo odoo_app odoo -c /etc/odoo/odoo.conf -d "${DB}" -u all --workers=0 --stop-after-init
+            UPDATED_COUNT=$((UPDATED_COUNT + 1))
+        fi
+    done
+fi
+
+if [ "$UPDATED_COUNT" -eq 0 ]; then
+    echo "Belum ada database Odoo aktif yang terdeteksi. Melewati update modul."
+else
+    echo "Semua modul berhasil diperbarui pada ${UPDATED_COUNT} database."
+fi
+
+echo "Merestart odoo_app agar seluruh dependensi & modul aktif..."
 docker restart odoo_app
 
 echo ""
 echo "=========================================="
-echo "Instalasi selesai!"
+echo "Instalasi & Update selesai!"
 echo "Dependensi 'openpyxl', 'ofxparse', dan 'qifparse' siap digunakan."
+echo "Modul Odoo telah diperbarui (-u all)."
 echo "Akses Odoo di: https://${ODOO_DOMAIN}"
 echo "=========================================="
