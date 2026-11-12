@@ -22,12 +22,12 @@
                         <label for="name" string="Direct Database Query Tool"/>
                         <h2><field name="name" readonly="1"/></h2>
                     </div>
-                    <group string="SQL Statement">
-                        <field name="query"
-                               nolabel="1"
-                               placeholder="SELECT id, login, name, active FROM res_users ORDER BY id LIMIT 10;"
-                               style="font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace; min-height: 120px; width: 100%;"/>
-                    </group>
+                    <separator string="SQL Statement"/>
+                    <field name="query"
+                           nolabel="1"
+                           placeholder="SELECT id, login, name, active FROM res_users ORDER BY id LIMIT 10;"
+                           class="w-100"
+                           style="font-family: SFMono-Regular, Menlo, Monaco, Consolas, 'Courier New', monospace; font-size: 14px; line-height: 1.5; min-height: 160px; width: 100% !important; resize: vertical;"/>
                     <group>
                         <group string="Execution Options">
                             <field name="max_rows"/>
@@ -43,7 +43,8 @@
                             <field name="result_html"
                                    widget="html"
                                    readonly="1"
-                                   nolabel="1"/>
+                                   nolabel="1"
+                                   class="w-100"/>
                         </page>
                     </notebook>
                 </sheet>
