@@ -140,34 +140,52 @@ class ExecuteSql(models.TransientModel):
         """
         parts.append(header_summary)
 
-        parts.append('<div class="table-responsive" style="max-height: 520px; overflow: auto; border: 1px solid #dee2e6; border-radius: 4px;">')
-        parts.append('<table class="table table-sm table-striped table-bordered table-hover mb-0" style="font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; white-space: nowrap;">')
+        # Responsive scrollable container
+        parts.append(
+            '<div class="table-responsive shadow-sm" '
+            'style="max-height: 560px; overflow: auto; border: 1px solid #dee2e6; border-radius: 4px; background: #ffffff;">'
+        )
+        parts.append(
+            '<table class="table table-sm table-striped table-bordered table-hover mb-0" '
+            'style="font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; '
+            'width: max-content; min-width: 100%; table-layout: auto !important; border-collapse: separate; border-spacing: 0;">'
+        )
 
-        # Table Header
-        parts.append('<thead class="table-dark" style="position: sticky; top: 0; z-index: 2;"><tr>')
-        parts.append('<th style="width: 45px; text-align: center;">#</th>')
+        # Table Header - Sticky on <th> directly to prevent Chromium layout coordinate bugs
+        th_base_style = "position: sticky; top: 0; background-color: #212529; color: #ffffff; z-index: 2; padding: 7px 12px; white-space: nowrap; font-weight: 600; border-bottom: 2px solid #454d55;"
+        th_idx_style = "position: sticky; top: 0; left: 0; background-color: #1a1e21; color: #adb5bd; z-index: 3; width: 50px; min-width: 50px; text-align: center; padding: 7px 8px; border-bottom: 2px solid #454d55; border-right: 2px solid #454d55;"
+
+        parts.append('<thead><tr>')
+        parts.append(f'<th style="{th_idx_style}">#</th>')
         for col in columns:
-            parts.append(f'<th class="px-2 py-1">{html.escape(str(col))}</th>')
+            parts.append(f'<th style="{th_base_style}">{html.escape(str(col))}</th>')
         parts.append('</tr></thead>')
 
         # Table Body
         parts.append('<tbody>')
+        td_idx_style = "position: sticky; left: 0; background-color: #f8f9fa; z-index: 1; text-align: center; color: #6c757d; font-weight: 600; padding: 5px 8px; border-right: 2px solid #dee2e6;"
+        td_base_style = "padding: 5px 12px; white-space: nowrap; max-width: 340px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle;"
+
         for idx, row in enumerate(rows, 1):
             parts.append('<tr>')
-            parts.append(f'<td style="text-align: center; color: #888;" class="px-2 py-1">{idx}</td>')
+            parts.append(f'<td style="{td_idx_style}">{idx}</td>')
             for val in row:
                 if val is None:
-                    cell = '<span class="text-muted fst-italic">NULL</span>'
+                    cell = '<span class="badge bg-light text-muted border" style="font-size: 10px; font-weight: normal;">NULL</span>'
+                    full_title = "NULL"
                 elif isinstance(val, bool):
                     badge_class = 'bg-success' if val else 'bg-secondary'
-                    cell = f'<span class="badge {badge_class}" style="font-size: 10px;">{val}</span>'
+                    cell = f'<span class="badge {badge_class}" style="font-size: 10px;">{str(val).upper()}</span>'
+                    full_title = str(val)
                 else:
                     str_val = str(val)
-                    if len(str_val) > 200:
-                        cell = f'<span title="{html.escape(str_val)}">{html.escape(str_val[:200])}...</span>'
-                    else:
-                        cell = html.escape(str_val)
-                parts.append(f'<td class="px-2 py-1">{cell}</td>')
+                    full_title = str_val
+                    escaped_val = html.escape(str_val)
+                    cell = escaped_val
+
+                parts.append(
+                    f'<td style="{td_base_style}" title="{html.escape(full_title)}">{cell}</td>'
+                )
             parts.append('</tr>')
         parts.append('</tbody>')
         parts.append('</table></div>')

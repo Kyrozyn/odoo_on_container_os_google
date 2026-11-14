@@ -19,19 +19,23 @@ mkdir -p "${LOCAL_ADDONS_DIR}"
 sudo chmod -R 777 "${LOCAL_ADDONS_DIR}"
 
 # Pindai subfolder modul yang memuat __manifest__.py secara otomatis
-echo "Memindai modul Odoo dan subfoldernya..."
-EXTRA_PATHS=$(find "${LOCAL_ADDONS_DIR}" -type f -name "__manifest__.py" -exec dirname {} + 2>/dev/null \
-    | xargs -I {} dirname {} 2>/dev/null \
-    | sort -u \
-    | sed "s|${LOCAL_ADDONS_DIR}|/mnt/extra-addons|g" \
-    | tr '\n' ',' \
-    | sed 's/,$//')
+echo "Memindai direktori modul Odoo..."
+EXTRA_PATHS=$(find "${LOCAL_ADDONS_DIR}" -type f -name "__manifest__.py" 2>/dev/null | while read -r manifest; do
+    mod_dir="$(dirname "$manifest")"
+    parent_dir="$(dirname "$mod_dir")"
+    echo "$parent_dir"
+done | sort -u | sed "s|${LOCAL_ADDONS_DIR}|/mnt/extra-addons|g")
 
-FINAL_ADDONS_PATH="/usr/lib/python3/dist-packages/odoo/addons,/mnt/extra-addons"
+# Susun daftar addons_path dan hilangkan duplikasi
+ADDONS_LIST="/usr/lib/python3/dist-packages/odoo/addons
+/mnt/extra-addons"
+
 if [ -n "$EXTRA_PATHS" ]; then
-    FINAL_ADDONS_PATH="${FINAL_ADDONS_PATH},${EXTRA_PATHS}"
+    ADDONS_LIST="${ADDONS_LIST}
+${EXTRA_PATHS}"
 fi
 
+FINAL_ADDONS_PATH=$(echo "$ADDONS_LIST" | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
 echo "Addons Path terpasang: ${FINAL_ADDONS_PATH}"
 
 # Hitung konfigurasi PostgreSQL dinamis
@@ -98,7 +102,7 @@ workers = ${ODOO_WORKERS}
 limit_memory_soft = ${LIMIT_MEM_SOFT}
 limit_memory_hard = ${LIMIT_MEM_HARD}
 
-; 0 = Nonaktifkan timeout CPU & Real time (Unlimited)
+; Unlimited Timeout
 limit_time_cpu = 0
 limit_time_real = 0
 max_cron_threads = 1
@@ -260,9 +264,8 @@ server {
     ssl_certificate /etc/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${ODOO_DOMAIN}/privkey.pem;
 
-    # Timeout Nginx diset hingga 10 jam (36000 detik)
-    proxy_connect_timeout 36000s;
     proxy_read_timeout 36000s;
+    proxy_connect_timeout 36000s;
     proxy_send_timeout 36000s;
     send_timeout 36000s;
     keepalive_timeout 36000s;
@@ -300,5 +303,64 @@ echo "=========================================="
 compose_cmd up -d
 docker exec odoo_nginx nginx -s reload
 
+echo "=========================================="
+echo "==> 9. Memasang Dependensi Python (pip)"
+echo "=========================================="
+echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
+docker exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
+
+echo "=========================================="
+echo "==> 10. Update Semua Modul Odoo (-u all) & Perbaiki Modul Stuck"
+echo "=========================================="
+echo "Mendeteksi database Odoo aktif di PostgreSQL..."
+PG_PASS="tAIre2vRTXDgRFSlqUy2kBFF"
+
+DB_LIST=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d postgres -tAc "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres');" 2>/dev/null || true)
+
+UPDATED_COUNT=0
+if [ -n "$DB_LIST" ]; then
+    for DB in $DB_LIST; do
+        IS_ODOO_DB=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module';" 2>/dev/null || true)
+        if [ "$IS_ODOO_DB" = "1" ]; then
+            echo "------------------------------------------"
+            echo "Memproses database: '${DB}'"
+
+            # Deteksi modul yang nyangkut (status to upgrade / to install / to remove)
+            STUCK_MODULES=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT name FROM ir_module_module WHERE state IN ('to upgrade', 'to install', 'to remove');" 2>/dev/null || true)
+            if [ -n "$STUCK_MODULES" ]; then
+                echo "Ditemukan modul menggantung (stuck) pada database '${DB}':"
+                echo "${STUCK_MODULES}"
+            fi
+
+            echo "==> Menjalankan update semua modul (-u all) pada database: '${DB}'..."
+            docker exec -u odoo odoo_app odoo -c /etc/odoo/odoo.conf -d "${DB}" -u all --workers=0 --stop-after-init || true
+
+            # Cek kembali jika masih ada modul yang nyangkut setelah proses upgrade
+            STUCK_AFTER=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT name FROM ir_module_module WHERE state IN ('to upgrade', 'to install', 'to remove');" 2>/dev/null || true)
+            if [ -n "$STUCK_AFTER" ]; then
+                echo "Memulihkan status modul yang masih menggantung: ${STUCK_AFTER}"
+                docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -c "UPDATE ir_module_module SET state = 'installed' WHERE state = 'to upgrade';"
+                docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -c "UPDATE ir_module_module SET state = 'uninstalled' WHERE state = 'to install';"
+            fi
+
+            UPDATED_COUNT=$((UPDATED_COUNT + 1))
+        fi
+    done
+fi
+
+if [ "$UPDATED_COUNT" -eq 0 ]; then
+    echo "Belum ada database Odoo aktif yang terdeteksi. Melewati update modul."
+else
+    echo "Semua database (${UPDATED_COUNT}) telah selesai diperbarui."
+fi
+
+echo "Merestart odoo_app agar seluruh dependensi & modul aktif..."
+docker restart odoo_app
+
 echo ""
-echo "Selesai. Timeout Odoo & Nginx telah diset ke mode unlimited/maksimal."
+echo "=========================================="
+echo "Instalasi & Update selesai!"
+echo "Dependensi 'openpyxl', 'ofxparse', dan 'qifparse' siap digunakan."
+echo "Modul Odoo telah diperbarui (-u all)."
+echo "Akses Odoo di: https://${ODOO_DOMAIN}"
+echo "=========================================="

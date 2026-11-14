@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 {
     'name': 'Execute SQL',
-    'version': '1.0.0',
+    'version': '1.0.2',
     'category': 'Technical',
     'summary': 'Execute direct SQL queries from Technical Settings in Developer Mode',
     'description': """
