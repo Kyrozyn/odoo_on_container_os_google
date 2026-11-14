@@ -310,18 +310,40 @@ echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
 docker exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
 
 echo "=========================================="
-echo "==> 10. Update Semua Modul Odoo (-u all) & Perbaiki Modul Stuck"
+echo "==> 10. Database & Update Modul Odoo"
 echo "=========================================="
+echo "Menunggu PostgreSQL siap..."
+for i in $(seq 1 30); do
+    if docker exec odoo_db pg_isready -U odoo -d postgres >/dev/null 2>&1; then
+        break
+    fi
+    sleep 1
+done
+
 echo "Mendeteksi database Odoo aktif di PostgreSQL..."
 PG_PASS="tAIre2vRTXDgRFSlqUy2kBFF"
 
 DB_LIST=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d postgres -tAc "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres');" 2>/dev/null || true)
 
-UPDATED_COUNT=0
+ODOO_DBS=""
 if [ -n "$DB_LIST" ]; then
     for DB in $DB_LIST; do
         IS_ODOO_DB=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module';" 2>/dev/null || true)
         if [ "$IS_ODOO_DB" = "1" ]; then
+            ODOO_DBS="${ODOO_DBS}${ODOO_DBS:+ }${DB}"
+        fi
+    done
+fi
+
+UPDATED_COUNT=0
+DB_INSTALLED=0
+NEW_DB_NAME=""
+
+if [ -n "$ODOO_DBS" ]; then
+    echo "Database Odoo terdeteksi: ${ODOO_DBS}"
+    read -p "Apakah Anda ingin update semua modul Odoo (-u all)? [y/N]: " CONFIRM_UPDATE
+    if [[ "$CONFIRM_UPDATE" =~ ^[Yy]$ ]]; then
+        for DB in $ODOO_DBS; do
             echo "------------------------------------------"
             echo "Memproses database: '${DB}'"
 
@@ -344,14 +366,37 @@ if [ -n "$DB_LIST" ]; then
             fi
 
             UPDATED_COUNT=$((UPDATED_COUNT + 1))
-        fi
-    done
-fi
-
-if [ "$UPDATED_COUNT" -eq 0 ]; then
-    echo "Belum ada database Odoo aktif yang terdeteksi. Melewati update modul."
+        done
+        echo "Semua database (${UPDATED_COUNT}) telah selesai diperbarui."
+    else
+        echo "Melewati update modul Odoo."
+    fi
 else
-    echo "Semua database (${UPDATED_COUNT}) telah selesai diperbarui."
+    echo "Belum ada database Odoo yang terinstall."
+    read -p "Apakah Anda ingin menginstall database Odoo baru? [y/N]: " CONFIRM_INSTALL_DB
+    if [[ "$CONFIRM_INSTALL_DB" =~ ^[Yy]$ ]]; then
+        while true; do
+            read -p "Masukkan nama database baru (default: odoo): " NEW_DB_NAME
+            NEW_DB_NAME=${NEW_DB_NAME:-odoo}
+            if [[ "$NEW_DB_NAME" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
+                break
+            fi
+            echo "Nama database tidak valid. Awali dengan huruf, lalu gunakan huruf, angka, '_' atau '-'."
+        done
+
+        read -p "Install tanpa data demo (--without-demo=all)? [Y/n]: " WITHOUT_DEMO
+        ODOO_INIT_ARGS=(-c /etc/odoo/odoo.conf -d "${NEW_DB_NAME}" -i base --workers=0 --stop-after-init)
+        if [[ ! "$WITHOUT_DEMO" =~ ^[Nn]$ ]]; then
+            ODOO_INIT_ARGS+=(--without-demo=all)
+        fi
+
+        echo "==> Menginstall database Odoo '${NEW_DB_NAME}' (modul base)..."
+        docker exec -u odoo odoo_app odoo "${ODOO_INIT_ARGS[@]}"
+        DB_INSTALLED=1
+        echo "Database '${NEW_DB_NAME}' berhasil diinstall."
+    else
+        echo "Melewati instalasi database Odoo."
+    fi
 fi
 
 echo "Merestart odoo_app agar seluruh dependensi & modul aktif..."
@@ -359,8 +404,13 @@ docker restart odoo_app
 
 echo ""
 echo "=========================================="
-echo "Instalasi & Update selesai!"
+echo "Proses selesai!"
 echo "Dependensi 'openpyxl', 'ofxparse', dan 'qifparse' siap digunakan."
-echo "Modul Odoo telah diperbarui (-u all)."
+if [ "$UPDATED_COUNT" -gt 0 ]; then
+    echo "Modul Odoo telah diperbarui (-u all) pada ${UPDATED_COUNT} database."
+fi
+if [ "$DB_INSTALLED" -eq 1 ]; then
+    echo "Database Odoo '${NEW_DB_NAME}' telah berhasil diinstall (login default: admin / admin)."
+fi
 echo "Akses Odoo di: https://${ODOO_DOMAIN}"
 echo "=========================================="
