@@ -176,9 +176,10 @@ workers = ${ODOO_WORKERS}
 limit_memory_soft = ${LIMIT_MEM_SOFT}
 limit_memory_hard = ${LIMIT_MEM_HARD}
 
-; Unlimited Timeout
-limit_time_cpu = 0
-limit_time_real = 0
+; Timeout Maksimal (10 jam, selaras dengan Nginx 36000s; nilai 0 di PreforkServer berarti timeout 0 detik!)
+limit_time_cpu = 36000
+limit_time_real = 36000
+limit_time_real_cron = 36000
 max_cron_threads = 1
 EOF
 
