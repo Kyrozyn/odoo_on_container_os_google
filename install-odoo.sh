@@ -121,6 +121,12 @@ CERTBOT_EMAIL=${CERTBOT_EMAIL:-arr@e.email}
 
 sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
 server {
+    listen 80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
     listen 80;
     server_name ${ODOO_DOMAIN};
 
@@ -242,6 +248,18 @@ upstream odoo {
 
 upstream odoo-chat {
     server odoo:8072;
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    ssl_reject_handshake on;
 }
 
 server {
