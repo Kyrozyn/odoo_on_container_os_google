@@ -59,19 +59,93 @@ else
 fi
 
 echo "=========================================="
-echo "==> 1. Menyiapkan Compose Wrapper (Google COS)"
+echo "==> 1. Deteksi OS & Menyiapkan Docker / Compose"
 echo "=========================================="
 
-compose_cmd() {
-    docker run --rm \
-        -v /var/run/docker.sock:/var/run/docker.sock \
-        -v /var/odoo:/var/odoo \
-        -v "${LOCAL_ADDONS_DIR}:${LOCAL_ADDONS_DIR}" \
-        -w /var/odoo \
-        docker/compose:latest "$@"
-}
+IS_COS=false
+OS_ID="unknown"
+OS_PRETTY="Linux"
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_ID="${ID:-unknown}"
+    OS_PRETTY="${PRETTY_NAME:-$OS_ID}"
+    if [ "$OS_ID" = "cos" ]; then
+        IS_COS=true
+    fi
+fi
 
-docker pull docker/compose:latest > /dev/null
+if [ "$IS_COS" = true ]; then
+    echo "OS terdeteksi: ${OS_PRETTY} (Google Container-Optimized OS)"
+    DOCKER_CMD="docker"
+    if ! $DOCKER_CMD info >/dev/null 2>&1; then
+        DOCKER_CMD="sudo docker"
+    fi
+
+    echo "Menyiapkan Compose Wrapper (docker/compose:latest)..."
+    $DOCKER_CMD pull docker/compose:latest > /dev/null
+    compose_cmd() {
+        $DOCKER_CMD run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v /var/odoo:/var/odoo \
+            -v "${LOCAL_ADDONS_DIR}:${LOCAL_ADDONS_DIR}" \
+            -w /var/odoo \
+            docker/compose:latest "$@"
+    }
+else
+    echo "OS terdeteksi: ${OS_PRETTY} (Non-COS)"
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "Docker belum terpasang. Menginstall Docker via get.docker.com..."
+        if ! command -v curl >/dev/null 2>&1; then
+            if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get update && sudo apt-get install -y curl
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y curl
+            elif command -v yum >/dev/null 2>&1; then
+                sudo yum install -y curl
+            else
+                echo "Error: 'curl' tidak ditemukan dan package manager tidak dikenali."
+                exit 1
+            fi
+        fi
+        curl -fsSL https://get.docker.com | sudo sh
+        if command -v systemctl >/dev/null 2>&1; then
+            sudo systemctl enable --now docker || true
+        fi
+    else
+        echo "Docker sudah terpasang."
+    fi
+
+    if [ "$(id -u)" -ne 0 ] && ! id -nG "$USER" | grep -qw docker; then
+        echo "Menambahkan user '${USER}' ke grup 'docker'..."
+        sudo usermod -aG docker "$USER" || true
+    fi
+
+    if docker info >/dev/null 2>&1; then
+        DOCKER_CMD="docker"
+    else
+        DOCKER_CMD="sudo docker"
+    fi
+
+    if $DOCKER_CMD compose version >/dev/null 2>&1; then
+        compose_cmd() {
+            (cd /var/odoo && $DOCKER_CMD compose "$@")
+        }
+    elif command -v docker-compose >/dev/null 2>&1; then
+        DOCKER_COMPOSE_BIN="docker-compose"
+        if [ "$DOCKER_CMD" = "sudo docker" ]; then
+            DOCKER_COMPOSE_BIN="sudo docker-compose"
+        fi
+        compose_cmd() {
+            (cd /var/odoo && $DOCKER_COMPOSE_BIN "$@")
+        }
+    else
+        echo "Plugin 'docker compose' tidak ditemukan. Menginstall via get.docker.com..."
+        curl -fsSL https://get.docker.com | sudo sh
+        compose_cmd() {
+            (cd /var/odoo && $DOCKER_CMD compose "$@")
+        }
+    fi
+fi
 
 echo "=========================================="
 echo "==> 2. Menyiapkan Direktori & Permission"
@@ -83,8 +157,8 @@ sudo mkdir -p /var/odoo/nginx_conf
 sudo mkdir -p /var/odoo/letsencrypt
 sudo mkdir -p /var/odoo/certbot_www
 
-docker stop odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
-docker rm odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
+$DOCKER_CMD stop odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
+$DOCKER_CMD rm odoo_app odoo_db odoo_nginx odoo_certbot 2>/dev/null || true
 
 echo "=========================================="
 echo "==> 3. Menyiapkan odoo.conf (Unlimited Timeout)"
@@ -226,7 +300,7 @@ echo "==> 6. Menerbitkan Sertifikat SSL"
 echo "=========================================="
 if [ ! -f "/var/odoo/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem" ]; then
     echo "Meminta sertifikat Let's Encrypt..."
-    docker run -it --rm \
+    $DOCKER_CMD run -it --rm \
       -v /var/odoo/letsencrypt:/etc/letsencrypt \
       -v /var/odoo/certbot_www:/var/www/certbot \
       certbot/certbot certonly --webroot \
@@ -319,20 +393,20 @@ echo "=========================================="
 echo "==> 8. Menjalankan Seluruh Stack"
 echo "=========================================="
 compose_cmd up -d
-docker exec odoo_nginx nginx -s reload
+$DOCKER_CMD exec odoo_nginx nginx -s reload
 
 echo "=========================================="
 echo "==> 9. Memasang Dependensi Python (pip)"
 echo "=========================================="
 echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
-docker exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
+$DOCKER_CMD exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
 
 echo "=========================================="
 echo "==> 10. Database & Update Modul Odoo"
 echo "=========================================="
 echo "Menunggu PostgreSQL siap..."
 for i in $(seq 1 30); do
-    if docker exec odoo_db pg_isready -U odoo -d postgres >/dev/null 2>&1; then
+    if $DOCKER_CMD exec odoo_db pg_isready -U odoo -d postgres >/dev/null 2>&1; then
         break
     fi
     sleep 1
@@ -341,12 +415,12 @@ done
 echo "Mendeteksi database Odoo aktif di PostgreSQL..."
 PG_PASS="tAIre2vRTXDgRFSlqUy2kBFF"
 
-DB_LIST=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d postgres -tAc "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres');" 2>/dev/null || true)
+DB_LIST=$($DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d postgres -tAc "SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres');" 2>/dev/null || true)
 
 ODOO_DBS=""
 if [ -n "$DB_LIST" ]; then
     for DB in $DB_LIST; do
-        IS_ODOO_DB=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module';" 2>/dev/null || true)
+        IS_ODOO_DB=$($DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT 1 FROM information_schema.tables WHERE table_name = 'ir_module_module';" 2>/dev/null || true)
         if [ "$IS_ODOO_DB" = "1" ]; then
             ODOO_DBS="${ODOO_DBS}${ODOO_DBS:+ }${DB}"
         fi
@@ -366,21 +440,21 @@ if [ -n "$ODOO_DBS" ]; then
             echo "Memproses database: '${DB}'"
 
             # Deteksi modul yang nyangkut (status to upgrade / to install / to remove)
-            STUCK_MODULES=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT name FROM ir_module_module WHERE state IN ('to upgrade', 'to install', 'to remove');" 2>/dev/null || true)
+            STUCK_MODULES=$($DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT name FROM ir_module_module WHERE state IN ('to upgrade', 'to install', 'to remove');" 2>/dev/null || true)
             if [ -n "$STUCK_MODULES" ]; then
                 echo "Ditemukan modul menggantung (stuck) pada database '${DB}':"
                 echo "${STUCK_MODULES}"
             fi
 
             echo "==> Menjalankan update semua modul (-u all) pada database: '${DB}'..."
-            docker exec -u odoo odoo_app odoo -c /etc/odoo/odoo.conf -d "${DB}" -u all --workers=0 --stop-after-init || true
+            $DOCKER_CMD exec -u odoo odoo_app odoo -c /etc/odoo/odoo.conf -d "${DB}" -u all --workers=0 --stop-after-init || true
 
             # Cek kembali jika masih ada modul yang nyangkut setelah proses upgrade
-            STUCK_AFTER=$(docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT name FROM ir_module_module WHERE state IN ('to upgrade', 'to install', 'to remove');" 2>/dev/null || true)
+            STUCK_AFTER=$($DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -tAc "SELECT name FROM ir_module_module WHERE state IN ('to upgrade', 'to install', 'to remove');" 2>/dev/null || true)
             if [ -n "$STUCK_AFTER" ]; then
                 echo "Memulihkan status modul yang masih menggantung: ${STUCK_AFTER}"
-                docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -c "UPDATE ir_module_module SET state = 'installed' WHERE state = 'to upgrade';"
-                docker exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -c "UPDATE ir_module_module SET state = 'uninstalled' WHERE state = 'to install';"
+                $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -c "UPDATE ir_module_module SET state = 'installed' WHERE state = 'to upgrade';"
+                $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U odoo -d "$DB" -c "UPDATE ir_module_module SET state = 'uninstalled' WHERE state = 'to install';"
             fi
 
             UPDATED_COUNT=$((UPDATED_COUNT + 1))
@@ -409,7 +483,7 @@ else
         fi
 
         echo "==> Menginstall database Odoo '${NEW_DB_NAME}' (modul base)..."
-        docker exec -u odoo odoo_app odoo "${ODOO_INIT_ARGS[@]}"
+        $DOCKER_CMD exec -u odoo odoo_app odoo "${ODOO_INIT_ARGS[@]}"
         DB_INSTALLED=1
         echo "Database '${NEW_DB_NAME}' berhasil diinstall."
     else
@@ -418,7 +492,7 @@ else
 fi
 
 echo "Merestart odoo_app agar seluruh dependensi & modul aktif..."
-docker restart odoo_app
+$DOCKER_CMD restart odoo_app
 
 echo ""
 echo "=========================================="
