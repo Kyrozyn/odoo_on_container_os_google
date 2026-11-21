@@ -164,6 +164,9 @@ diagnose_odoo_logs() {
     if echo "$logs" | grep -qiE 'no such option|unrecognized|ConfigParser|ParsingError'; then
         echo "  -> Terindikasi opsi konfigurasi tidak valid pada odoo.conf."
     fi
+    if echo "$logs" | grep -qiE "database user 'postgres' is a security risk"; then
+        echo "  -> Odoo menolak pemakaian user 'postgres' secara langsung (gunakan user non-postgres, mis. 'odoo')."
+    fi
     if echo "$logs" | grep -qiE 'could not connect|Connection refused|password authentication failed|OperationalError|pg_hba'; then
         echo "  -> Terindikasi gagal koneksi/autentikasi ke PostgreSQL."
     fi
@@ -236,6 +239,8 @@ PG_HOST="db"
 PG_PORT="5432"
 PG_USER="odoo"
 PG_PASS=$(generate_random_password)
+PG_DBNAME=""
+CREATED_PG_ROLE=false
 
 DETECTED_PG_TYPES=()
 DETECTED_PG_NAMES=()
@@ -350,10 +355,12 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
             fi
         fi
 
-        test_existing_pg_connection() {
+        exec_existing_pg_sql() {
+            local target_db="${1:-postgres}"
+            local sql_query="$2"
             if [ "$EXISTING_PG_TYPE" = "container" ] && [ "$PG_HOST" = "$EXISTING_PG_CONTAINER" ]; then
                 $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 "${EXISTING_PG_CONTAINER}" \
-                    psql -h 127.0.0.1 -p "${PG_PORT}" -U "${PG_USER}" -d postgres -tAc "SELECT 1;" 2>&1
+                    psql -h 127.0.0.1 -p "${PG_PORT}" -U "${PG_USER}" -d "${target_db}" -tAc "${sql_query}" 2>&1
                 return $?
             fi
 
@@ -369,23 +376,37 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
             if [ -n "$test_image" ]; then
                 $DOCKER_CMD run --rm --add-host=host.docker.internal:host-gateway \
                     -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 "$test_image" \
-                    psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d postgres -tAc "SELECT 1;" 2>&1
+                    psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d "${target_db}" -tAc "${sql_query}" 2>&1
                 return $?
             elif $DOCKER_CMD image inspect odoo:latest >/dev/null 2>&1; then
                 $DOCKER_CMD run --rm --entrypoint python3 --add-host=host.docker.internal:host-gateway \
                     -e PG_HOST="${PG_HOST}" -e PG_PORT="${PG_PORT}" -e PG_USER="${PG_USER}" -e PG_PASS="${PG_PASS}" \
-                    odoo:latest -c "import os, psycopg2; conn=psycopg2.connect(host=os.environ['PG_HOST'], port=int(os.environ['PG_PORT']), user=os.environ['PG_USER'], password=os.environ['PG_PASS'], dbname='postgres', connect_timeout=5); cur=conn.cursor(); cur.execute('SELECT 1'); print(cur.fetchone()[0]); conn.close()" 2>&1
+                    -e PG_TARGET_DB="${target_db}" -e SQL_QUERY="${sql_query}" \
+                    odoo:latest -c "import os, psycopg2; conn=psycopg2.connect(host=os.environ['PG_HOST'], port=int(os.environ['PG_PORT']), user=os.environ['PG_USER'], password=os.environ['PG_PASS'], dbname=os.environ['PG_TARGET_DB'], connect_timeout=5); conn.autocommit=True; cur=conn.cursor(); cur.execute(os.environ['SQL_QUERY']); print('\n'.join(str(r[0]) for r in cur.fetchall())) if cur.description else None; conn.close()" 2>&1
                 return $?
             else
                 $DOCKER_CMD run --rm --add-host=host.docker.internal:host-gateway \
                     -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 postgres:16-alpine \
-                    psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d postgres -tAc "SELECT 1;" 2>&1
+                    psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d "${target_db}" -tAc "${sql_query}" 2>&1
                 return $?
             fi
         }
 
+        test_existing_pg_connection() {
+            local out rc
+            out=$(exec_existing_pg_sql "postgres" "SELECT 1;")
+            rc=$?
+            if [ "$rc" -ne 0 ] && [ -n "$PG_DBNAME" ] && [ "$PG_DBNAME" != "postgres" ]; then
+                out=$(exec_existing_pg_sql "$PG_DBNAME" "SELECT 1;")
+                rc=$?
+            fi
+            printf '%s\n' "$out"
+            return "$rc"
+        }
+
         echo "Menggunakan PostgreSQL yang sudah ada: ${DETECTED_PG_DESCS[$SELECTED_IDX]}"
         while true; do
+            USING_POSTGRES_ADMIN=false
             read -p "Host PostgreSQL untuk Odoo (default: ${DEFAULT_PG_HOST}): " INPUT_PG_HOST
             PG_HOST=${INPUT_PG_HOST:-$DEFAULT_PG_HOST}
 
@@ -398,8 +419,21 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
                 echo "Port tidak valid. Masukkan angka 1-65535."
             done
 
-            read -p "User PostgreSQL (default: odoo): " INPUT_PG_USER
-            PG_USER=${INPUT_PG_USER:-odoo}
+            while true; do
+                read -p "User PostgreSQL (default: odoo): " INPUT_PG_USER
+                PG_USER=${INPUT_PG_USER:-odoo}
+                if [ "$PG_USER" != "postgres" ]; then
+                    break
+                fi
+                echo ""
+                echo "PERINGATAN: Odoo melarang pemakaian user 'postgres' secara langsung (Using the database user 'postgres' is a security risk)."
+                read -p "Gunakan user 'postgres' hanya untuk membuatkan user Odoo baru (non-postgres) otomatis? [Y/n]: " AUTO_CREATE_ROLE
+                if [[ ! "$AUTO_CREATE_ROLE" =~ ^[Nn]$ ]]; then
+                    USING_POSTGRES_ADMIN=true
+                    break
+                fi
+                echo "Silakan masukkan user PostgreSQL selain 'postgres'."
+            done
 
             EXISTING_CONF_PASS=""
             if [ -f /var/odoo/config/odoo.conf ]; then
@@ -407,12 +441,12 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
             fi
 
             while true; do
-                if [ -n "$EXISTING_CONF_PASS" ]; then
-                    read -s -p "Password PostgreSQL (kosongkan untuk memakai password dari odoo.conf sebelumnya): " INPUT_PG_PASS
+                if [ "$USING_POSTGRES_ADMIN" = false ] && [ -n "$EXISTING_CONF_PASS" ]; then
+                    read -s -p "Password PostgreSQL untuk '${PG_USER}' (kosongkan untuk memakai password dari odoo.conf sebelumnya): " INPUT_PG_PASS
                     echo ""
                     PG_PASS=${INPUT_PG_PASS:-$EXISTING_CONF_PASS}
                 else
-                    read -s -p "Password PostgreSQL: " INPUT_PG_PASS
+                    read -s -p "Password PostgreSQL untuk '${PG_USER}': " INPUT_PG_PASS
                     echo ""
                     PG_PASS=${INPUT_PG_PASS}
                 fi
@@ -420,6 +454,15 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
                     break
                 fi
                 echo "Password PostgreSQL tidak boleh kosong."
+            done
+
+            while true; do
+                read -p "Default database Odoo (kosongkan jika ingin pilih lewat web / otomatis): " INPUT_PG_DBNAME
+                PG_DBNAME=${INPUT_PG_DBNAME}
+                if [ -z "$PG_DBNAME" ] || [[ "$PG_DBNAME" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]; then
+                    break
+                fi
+                echo "Nama database tidak valid. Awali dengan huruf atau '_', lalu gunakan huruf, angka, '_' atau '-'."
             done
 
             echo "Menguji koneksi ke PostgreSQL (${PG_HOST}:${PG_PORT}) dengan user '${PG_USER}'..."
@@ -430,6 +473,57 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
 
             if [ "$PG_TEST_RC" -eq 0 ] && echo "$PG_TEST_OUT" | grep -qx "1"; then
                 echo "OK: Koneksi ke PostgreSQL berhasil!"
+                if [ "$USING_POSTGRES_ADMIN" = true ]; then
+                    while true; do
+                        read -p "Nama user PostgreSQL baru untuk Odoo (default: odoo): " NEW_ROLE_NAME
+                        NEW_ROLE_NAME=${NEW_ROLE_NAME:-odoo}
+                        if [ "$NEW_ROLE_NAME" = "postgres" ]; then
+                            echo "Tidak boleh 'postgres'. Masukkan nama lain."
+                        elif [[ "$NEW_ROLE_NAME" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]; then
+                            break
+                        else
+                            echo "Nama user tidak valid. Awali dengan huruf atau '_', lalu gunakan huruf, angka, '_' atau '-'."
+                        fi
+                    done
+
+                    read -s -p "Password untuk user '${NEW_ROLE_NAME}' (kosongkan untuk acak otomatis): " INPUT_NEW_ROLE_PASS
+                    echo ""
+                    NEW_ROLE_PASS=${INPUT_NEW_ROLE_PASS:-$(generate_random_password)}
+                    ESCAPED_ROLE_PASS=${NEW_ROLE_PASS//\'/\'\'}
+
+                    ROLE_SQL="DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${NEW_ROLE_NAME}') THEN CREATE ROLE \"${NEW_ROLE_NAME}\" WITH LOGIN CREATEDB PASSWORD '${ESCAPED_ROLE_PASS}'; ELSE ALTER ROLE \"${NEW_ROLE_NAME}\" WITH LOGIN CREATEDB PASSWORD '${ESCAPED_ROLE_PASS}'; END IF; END \$\$;"
+                    echo "Membuat/menyiapkan role PostgreSQL '${NEW_ROLE_NAME}' untuk Odoo..."
+                    set +e
+                    ROLE_OUT=$(exec_existing_pg_sql "postgres" "$ROLE_SQL")
+                    ROLE_RC=$?
+                    set -e
+
+                    if [ "$ROLE_RC" -ne 0 ]; then
+                        echo "GAGAL membuat role '${NEW_ROLE_NAME}': ${ROLE_OUT}"
+                        continue
+                    fi
+
+                    if [ -n "$PG_DBNAME" ]; then
+                        GRANT_SQL="DO \$\$ BEGIN IF EXISTS (SELECT 1 FROM pg_database WHERE datname = '${PG_DBNAME}') THEN EXECUTE format('GRANT ALL PRIVILEGES ON DATABASE %I TO %I', '${PG_DBNAME}', '${NEW_ROLE_NAME}'); END IF; END \$\$;"
+                        exec_existing_pg_sql "postgres" "$GRANT_SQL" >/dev/null 2>&1 || true
+                    fi
+
+                    PG_USER="${NEW_ROLE_NAME}"
+                    PG_PASS="${NEW_ROLE_PASS}"
+                    CREATED_PG_ROLE=true
+
+                    set +e
+                    PG_TEST_OUT=$(test_existing_pg_connection)
+                    PG_TEST_RC=$?
+                    set -e
+                    if [ "$PG_TEST_RC" -eq 0 ] && echo "$PG_TEST_OUT" | grep -qx "1"; then
+                        echo "OK: User PostgreSQL '${PG_USER}' siap digunakan oleh Odoo!"
+                        break
+                    else
+                        echo "GAGAL login sebagai user baru '${PG_USER}': ${PG_TEST_OUT}"
+                        continue
+                    fi
+                fi
                 break
             fi
 
@@ -453,6 +547,8 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
                 PG_PORT="5432"
                 PG_USER="odoo"
                 PG_PASS=$(generate_random_password)
+                PG_DBNAME=""
+                CREATED_PG_ROLE=false
                 echo "Beralih membuat container PostgreSQL baru (odoo_db)."
                 break
             elif [ "$PG_RETRY_CHOICE" = "3" ]; then
@@ -497,6 +593,11 @@ db_host = ${PG_HOST}
 db_port = ${PG_PORT}
 db_user = ${PG_USER}
 db_password = ${PG_PASS}
+EOF
+        if [ -n "$PG_DBNAME" ]; then
+            echo "db_name = ${PG_DBNAME}"
+        fi
+        cat <<EOF
 http_interface = 0.0.0.0
 proxy_mode = True
 addons_path = ${FINAL_ADDONS_PATH}
@@ -1054,9 +1155,10 @@ if [ "$PG_READY" = true ] && [ "$(run_psql -d postgres -tAc "SELECT 1;" 2>/dev/n
         echo "Belum ada database Odoo yang terinstall."
         read -p "Apakah Anda ingin menginstall database Odoo baru? [y/N]: " CONFIRM_INSTALL_DB
         if [[ "$CONFIRM_INSTALL_DB" =~ ^[Yy]$ ]]; then
+            DEFAULT_NEW_DB_NAME="${PG_DBNAME:-odoo}"
             while true; do
-                read -p "Masukkan nama database baru (default: odoo): " NEW_DB_NAME
-                NEW_DB_NAME=${NEW_DB_NAME:-odoo}
+                read -p "Masukkan nama database baru (default: ${DEFAULT_NEW_DB_NAME}): " NEW_DB_NAME
+                NEW_DB_NAME=${NEW_DB_NAME:-$DEFAULT_NEW_DB_NAME}
                 if [[ "$NEW_DB_NAME" =~ ^[a-zA-Z][a-zA-Z0-9_-]*$ ]]; then
                     break
                 fi
@@ -1095,7 +1197,7 @@ fi
 if [ "$DB_INSTALLED" -eq 1 ]; then
     echo "Database Odoo '${NEW_DB_NAME}' telah berhasil diinstall (login default: admin / admin)."
 fi
-if [ "$USE_NEW_PG" = true ]; then
+if [ "$USE_NEW_PG" = true ] || [ "$CREATED_PG_ROLE" = true ]; then
     echo "Password PostgreSQL (${PG_USER}): ${PG_PASS} (tersimpan di /var/odoo/config/odoo.conf)"
 fi
 if [ "$USE_DOMAIN" = true ]; then
