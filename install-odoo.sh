@@ -771,7 +771,7 @@ EOF
 EOF
     else
         cat <<EOF
-      - "${LOCAL_PORT}:80"
+      - "0.0.0.0:${LOCAL_PORT}:80"
     volumes:
       - /var/odoo/nginx_conf:/etc/nginx/conf.d:ro
 EOF
@@ -959,6 +959,30 @@ echo "=========================================="
 compose_cmd up -d
 if [ "$USE_DOMAIN" = true ]; then
     $DOCKER_CMD exec odoo_nginx nginx -s reload
+fi
+
+NGINX_RUNNING=$($DOCKER_CMD inspect -f '{{.State.Running}}' odoo_nginx 2>/dev/null || echo "false")
+if [ "$NGINX_RUNNING" != "true" ]; then
+    echo "PERINGATAN: Container 'odoo_nginx' tidak berjalan!"
+    $DOCKER_CMD logs --tail 25 odoo_nginx 2>&1 || true
+fi
+
+if [ "$USE_DOMAIN" = false ]; then
+    if command -v ufw >/dev/null 2>&1 && sudo ufw status 2>/dev/null | grep -qi "Status: active"; then
+        if ! sudo ufw status 2>/dev/null | grep -qE "(^|[[:space:]])${LOCAL_PORT}(/tcp)?[[:space:]].*ALLOW"; then
+            read -p "Firewall UFW aktif dan port ${LOCAL_PORT}/tcp belum dibuka. Buka port ${LOCAL_PORT}/tcp sekarang? [Y/n]: " OPEN_UFW
+            if [[ ! "$OPEN_UFW" =~ ^[Nn]$ ]]; then
+                sudo ufw allow "${LOCAL_PORT}/tcp" || true
+            fi
+        fi
+    elif command -v firewall-cmd >/dev/null 2>&1 && [ "$(sudo firewall-cmd --state 2>/dev/null || true)" = "running" ]; then
+        if ! sudo firewall-cmd --query-port="${LOCAL_PORT}/tcp" >/dev/null 2>&1; then
+            read -p "Firewalld aktif dan port ${LOCAL_PORT}/tcp belum dibuka. Buka port ${LOCAL_PORT}/tcp sekarang? [Y/n]: " OPEN_FW
+            if [[ ! "$OPEN_FW" =~ ^[Nn]$ ]]; then
+                sudo firewall-cmd --permanent --add-port="${LOCAL_PORT}/tcp" && sudo firewall-cmd --reload || true
+            fi
+        fi
+    fi
 fi
 
 check_odoo_stable() {
@@ -1204,5 +1228,14 @@ if [ "$USE_DOMAIN" = true ]; then
     echo "Akses Odoo di: https://${ODOO_DOMAIN}"
 else
     echo "Akses Odoo di: http://localhost:${LOCAL_PORT} (atau http://<IP-SERVER>:${LOCAL_PORT})"
+    if command -v curl >/dev/null 2>&1; then
+        sleep 2
+        LOCAL_HTTP_CODE=$(curl -sS -o /dev/null -w "%{http_code}" "http://127.0.0.1:${LOCAL_PORT}/web/login" 2>/dev/null || true)
+        echo "Cek lokal server (127.0.0.1:${LOCAL_PORT}): HTTP ${LOCAL_HTTP_CODE:-gagal}"
+    fi
+    if [ "$LOCAL_PORT" != "80" ] && [ "$LOCAL_PORT" != "443" ]; then
+        echo "Catatan: Jika diakses dari luar server (via IP publik/cloud seperti GCP/AWS/VPS),"
+        echo "pastikan port TCP ${LOCAL_PORT} sudah diizinkan di Firewall Cloud / Security Group (atau gunakan port 80)."
+    fi
 fi
 echo "=========================================="
