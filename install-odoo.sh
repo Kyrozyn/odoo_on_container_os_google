@@ -799,39 +799,30 @@ EOF
     fi
 } | sudo tee /var/odoo/docker-compose.yml > /dev/null
 
-if [ "$USE_DOMAIN" = true ]; then
-    echo "Menjalankan Nginx untuk verifikasi ACME..."
-    compose_cmd up -d nginx
-
-    echo "=========================================="
-    echo "==> 6. Menerbitkan Sertifikat SSL"
-    echo "=========================================="
-    if [ ! -f "/var/odoo/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem" ]; then
-        echo "Meminta sertifikat Let's Encrypt..."
-        $DOCKER_CMD run -it --rm \
-          -v /var/odoo/letsencrypt:/etc/letsencrypt \
-          -v /var/odoo/certbot_www:/var/www/certbot \
-          certbot/certbot certonly --webroot \
-          --webroot-path=/var/www/certbot \
-          --email "${CERTBOT_EMAIL}" \
-          --agree-tos --no-eff-email \
-          -d "${ODOO_DOMAIN}"
-    else
-        echo "Sertifikat SSL untuk ${ODOO_DOMAIN} sudah tersedia."
+write_nginx_conf() {
+    local chat_port="8072"
+    if [ "${ODOO_WORKERS:-0}" -le 0 ]; then
+        chat_port="8069"
     fi
 
-    echo "=========================================="
-    echo "==> 7. Mengaktifkan Nginx HTTPS (Timeout Maksimal)"
-    echo "=========================================="
-    sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
+    {
+        cat <<EOF
 upstream odoo {
     server odoo:8069;
 }
 
 upstream odoo-chat {
-    server odoo:8072;
+    server odoo:${chat_port};
 }
 
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+EOF
+        if [ "$USE_DOMAIN" = true ]; then
+            cat <<EOF
 server {
     listen 80 default_server;
     server_name _;
@@ -863,60 +854,16 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${ODOO_DOMAIN}/privkey.pem;
-
-    proxy_read_timeout 36000s;
-    proxy_connect_timeout 36000s;
-    proxy_send_timeout 36000s;
-    send_timeout 36000s;
-    keepalive_timeout 36000s;
-
-    access_log /var/log/nginx/odoo.access.log;
-    error_log /var/log/nginx/odoo.error.log;
-
-    location /longpolling {
-        proxy_pass http://odoo-chat;
-    }
-
-    location / {
-        proxy_pass http://odoo;
-        proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
-        proxy_redirect off;
-
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    client_max_body_size 256M;
-    proxy_buffers 16 1024k;
-    proxy_buffer_size 1024k;
-
-    gzip_types text/css text/less text/plain text/xml application/xml application/json application/javascript;
-    gzip on;
-}
 EOF
-else
-    echo "=========================================="
-    echo "==> 6. Sertifikat SSL (Dilewati - Mode Lokal)"
-    echo "=========================================="
-    echo "Mode lokal aktif: tidak perlu menerbitkan sertifikat SSL."
-
-    echo "=========================================="
-    echo "==> 7. Mengaktifkan Nginx HTTP Lokal (Port ${LOCAL_PORT})"
-    echo "=========================================="
-    sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
-upstream odoo {
-    server odoo:8069;
-}
-
-upstream odoo-chat {
-    server odoo:8072;
-}
-
+        else
+            cat <<EOF
 server {
     listen 80 default_server;
     server_name _;
+EOF
+        fi
+
+        cat <<EOF
 
     proxy_read_timeout 36000s;
     proxy_connect_timeout 36000s;
@@ -927,8 +874,27 @@ server {
     access_log /var/log/nginx/odoo.access.log;
     error_log /var/log/nginx/odoo.error.log;
 
+    location /websocket {
+        proxy_pass http://odoo-chat;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_redirect off;
+    }
+
     location /longpolling {
         proxy_pass http://odoo-chat;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_redirect off;
     }
 
     location / {
@@ -951,6 +917,44 @@ server {
     gzip on;
 }
 EOF
+    } | sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null
+}
+
+if [ "$USE_DOMAIN" = true ]; then
+    echo "Menjalankan Nginx untuk verifikasi ACME..."
+    compose_cmd up -d nginx
+
+    echo "=========================================="
+    echo "==> 6. Menerbitkan Sertifikat SSL"
+    echo "=========================================="
+    if [ ! -f "/var/odoo/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem" ]; then
+        echo "Meminta sertifikat Let's Encrypt..."
+        $DOCKER_CMD run -it --rm \
+          -v /var/odoo/letsencrypt:/etc/letsencrypt \
+          -v /var/odoo/certbot_www:/var/www/certbot \
+          certbot/certbot certonly --webroot \
+          --webroot-path=/var/www/certbot \
+          --email "${CERTBOT_EMAIL}" \
+          --agree-tos --no-eff-email \
+          -d "${ODOO_DOMAIN}"
+    else
+        echo "Sertifikat SSL untuk ${ODOO_DOMAIN} sudah tersedia."
+    fi
+
+    echo "=========================================="
+    echo "==> 7. Mengaktifkan Nginx HTTPS (Timeout Maksimal)"
+    echo "=========================================="
+    write_nginx_conf
+else
+    echo "=========================================="
+    echo "==> 6. Sertifikat SSL (Dilewati - Mode Lokal)"
+    echo "=========================================="
+    echo "Mode lokal aktif: tidak perlu menerbitkan sertifikat SSL."
+
+    echo "=========================================="
+    echo "==> 7. Mengaktifkan Nginx HTTP Lokal (Port ${LOCAL_PORT})"
+    echo "=========================================="
+    write_nginx_conf
 fi
 
 echo "=========================================="
@@ -1018,7 +1022,9 @@ if ! check_odoo_stable; then
         LIMIT_MEM_SOFT=671088640
         LIMIT_MEM_HARD=805306368
         write_odoo_conf
+        write_nginx_conf
         sudo chmod -R 777 /var/odoo
+        $DOCKER_CMD exec odoo_nginx nginx -s reload >/dev/null 2>&1 || true
         REPAIRED=true
     elif echo "$CUR_ODOO_LOGS" | grep -qiE 'no such option.*limit_time_real_cron|unrecognized.*limit_time_real_cron'; then
         echo "Mencoba perbaikan otomatis: menghapus opsi 'limit_time_real_cron' dari odoo.conf..."
