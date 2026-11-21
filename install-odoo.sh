@@ -147,6 +147,73 @@ else
     fi
 fi
 
+diagnose_odoo_logs() {
+    local logs="$1"
+    if [ -z "$logs" ]; then
+        return
+    fi
+    if echo "$logs" | grep -qiE 'MemoryError|Cannot allocate memory|OOM'; then
+        echo "  -> Terindikasi kekurangan memori (OOM / MemoryError)."
+    fi
+    if echo "$logs" | grep -qiE 'PermissionError|Permission denied|EACCES'; then
+        echo "  -> Terindikasi masalah permission file/direktori."
+    fi
+    if echo "$logs" | grep -qiE 'CPU time limit|limit_time'; then
+        echo "  -> Terindikasi masalah konfigurasi limit_time pada odoo.conf."
+    fi
+    if echo "$logs" | grep -qiE 'no such option|unrecognized|ConfigParser|ParsingError'; then
+        echo "  -> Terindikasi opsi konfigurasi tidak valid pada odoo.conf."
+    fi
+    if echo "$logs" | grep -qiE 'could not connect|Connection refused|password authentication failed|OperationalError|pg_hba'; then
+        echo "  -> Terindikasi gagal koneksi/autentikasi ke PostgreSQL."
+    fi
+    if echo "$logs" | grep -qiE 'ModuleNotFoundError|ImportError'; then
+        echo "  -> Terindikasi modul Python yang dibutuhkan belum terpasang."
+    fi
+}
+
+if $DOCKER_CMD inspect odoo_app >/dev/null 2>&1; then
+    PREV_ODOO_RUNNING=$($DOCKER_CMD inspect -f '{{.State.Running}}' odoo_app 2>/dev/null || echo "false")
+    PREV_ODOO_RESTARTING=$($DOCKER_CMD inspect -f '{{.State.Restarting}}' odoo_app 2>/dev/null || echo "false")
+    PREV_ODOO_RESTART_COUNT=$($DOCKER_CMD inspect -f '{{.RestartCount}}' odoo_app 2>/dev/null || echo "0")
+    PREV_ODOO_EXIT_CODE=$($DOCKER_CMD inspect -f '{{.State.ExitCode}}' odoo_app 2>/dev/null || echo "0")
+    PREV_ODOO_OOM=$($DOCKER_CMD inspect -f '{{.State.OOMKilled}}' odoo_app 2>/dev/null || echo "false")
+
+    if [ "$PREV_ODOO_RESTARTING" = "true" ] || [ "${PREV_ODOO_RESTART_COUNT:-0}" -gt 0 ] || { [ "$PREV_ODOO_RUNNING" != "true" ] && [ "${PREV_ODOO_EXIT_CODE:-0}" -ne 0 ]; }; then
+        echo "=========================================="
+        echo "==> 1a. Deteksi Masalah Container odoo_app"
+        echo "=========================================="
+        echo "PERINGATAN: Container 'odoo_app' terdeteksi sering restart / gagal berjalan!"
+        echo "Status: Running=${PREV_ODOO_RUNNING}, Restarting=${PREV_ODOO_RESTARTING}, RestartCount=${PREV_ODOO_RESTART_COUNT}, ExitCode=${PREV_ODOO_EXIT_CODE}, OOMKilled=${PREV_ODOO_OOM}"
+        PREV_ODOO_LOGS=$($DOCKER_CMD logs --tail 25 odoo_app 2>&1 || true)
+        if [ -n "$PREV_ODOO_LOGS" ]; then
+            echo "--- 25 baris log terakhir odoo_app ---"
+            echo "$PREV_ODOO_LOGS"
+            echo "--------------------------------------"
+            echo "Analisa otomatis:"
+            diagnose_odoo_logs "$PREV_ODOO_LOGS"
+        fi
+        if [ "$PREV_ODOO_OOM" = "true" ] || echo "$PREV_ODOO_LOGS" | grep -qiE 'MemoryError|Cannot allocate memory'; then
+            if [ "$ODOO_WORKERS" -gt 0 ]; then
+                read -p "Terdeteksi masalah memori. Turunkan Odoo ke single-process (workers=0) agar lebih ringan? [Y/n]: " CONFIRM_LOW_MEM
+                if [[ ! "$CONFIRM_LOW_MEM" =~ ^[Nn]$ ]]; then
+                    ODOO_WORKERS=0
+                    LIMIT_MEM_SOFT=671088640
+                    LIMIT_MEM_HARD=805306368
+                    echo "Mode hemat RAM diaktifkan (workers=0)."
+                fi
+            fi
+        fi
+        read -p "Hentikan 'odoo_app' yang bermasalah sekarang dan lanjutkan perbaikan? [Y/n]: " CONFIRM_FIX_ODOO
+        if [[ "$CONFIRM_FIX_ODOO" =~ ^[Nn]$ ]]; then
+            echo "Dibatalkan oleh pengguna."
+            exit 0
+        fi
+        $DOCKER_CMD stop odoo_app >/dev/null 2>&1 || true
+        echo "Container 'odoo_app' dihentikan. Script akan memperbaiki konfigurasi, permission, jaringan, dan dependensi."
+    fi
+fi
+
 echo "=========================================="
 echo "==> 1b. Deteksi PostgreSQL yang Sedang Berjalan"
 echo "=========================================="
@@ -418,9 +485,12 @@ if [ "$USE_NEW_PG" = true ]; then
 fi
 
 echo "=========================================="
-echo "==> 3. Menyiapkan odoo.conf (Unlimited Timeout)"
+echo "==> 3. Menyiapkan odoo.conf (Timeout Maksimal)"
 echo "=========================================="
-sudo tee /var/odoo/config/odoo.conf > /dev/null <<EOF
+ENABLE_LIMIT_TIME_REAL_CRON=true
+write_odoo_conf() {
+    {
+        cat <<EOF
 [options]
 admin_passwd = admin
 db_host = ${PG_HOST}
@@ -437,9 +507,15 @@ limit_memory_hard = ${LIMIT_MEM_HARD}
 ; Timeout Maksimal (10 jam, selaras dengan Nginx 36000s; nilai 0 di PreforkServer berarti timeout 0 detik!)
 limit_time_cpu = 36000
 limit_time_real = 36000
-limit_time_real_cron = 36000
-max_cron_threads = 1
 EOF
+        if [ "$ENABLE_LIMIT_TIME_REAL_CRON" = true ]; then
+            echo "limit_time_real_cron = 36000"
+        fi
+        echo "max_cron_threads = 1"
+    } | sudo tee /var/odoo/config/odoo.conf > /dev/null
+}
+
+write_odoo_conf
 
 sudo chmod -R 777 /var/odoo
 
@@ -784,11 +860,98 @@ if [ "$USE_DOMAIN" = true ]; then
     $DOCKER_CMD exec odoo_nginx nginx -s reload
 fi
 
+check_odoo_stable() {
+    local i running restarting restarts
+    sleep 2
+    for i in 1 2 3; do
+        running=$($DOCKER_CMD inspect -f '{{.State.Running}}' odoo_app 2>/dev/null || echo "false")
+        restarting=$($DOCKER_CMD inspect -f '{{.State.Restarting}}' odoo_app 2>/dev/null || echo "false")
+        restarts=$($DOCKER_CMD inspect -f '{{.RestartCount}}' odoo_app 2>/dev/null || echo "0")
+        if [ "$running" != "true" ] || [ "$restarting" = "true" ] || [ "${restarts:-0}" -gt 0 ]; then
+            return 1
+        fi
+        sleep 1
+    done
+    return 0
+}
+
+echo "Memeriksa stabilitas container odoo_app..."
+if ! check_odoo_stable; then
+    echo "PERINGATAN: Container 'odoo_app' terdeteksi crash / restarting setelah dijalankan!"
+    CUR_ODOO_OOM=$($DOCKER_CMD inspect -f '{{.State.OOMKilled}}' odoo_app 2>/dev/null || echo "false")
+    CUR_ODOO_LOGS=$($DOCKER_CMD logs --tail 35 odoo_app 2>&1 || true)
+    echo "--- 35 baris log terakhir odoo_app ---"
+    echo "$CUR_ODOO_LOGS"
+    echo "--------------------------------------"
+    echo "Analisa otomatis:"
+    diagnose_odoo_logs "$CUR_ODOO_LOGS"
+
+    REPAIRED=false
+    if { [ "$CUR_ODOO_OOM" = "true" ] || echo "$CUR_ODOO_LOGS" | grep -qiE 'MemoryError|Cannot allocate memory'; } && [ "$ODOO_WORKERS" -gt 0 ]; then
+        echo "Mencoba perbaikan otomatis: menurunkan ke single-process (workers=0) untuk hemat RAM..."
+        ODOO_WORKERS=0
+        LIMIT_MEM_SOFT=671088640
+        LIMIT_MEM_HARD=805306368
+        write_odoo_conf
+        sudo chmod -R 777 /var/odoo
+        REPAIRED=true
+    elif echo "$CUR_ODOO_LOGS" | grep -qiE 'no such option.*limit_time_real_cron|unrecognized.*limit_time_real_cron'; then
+        echo "Mencoba perbaikan otomatis: menghapus opsi 'limit_time_real_cron' dari odoo.conf..."
+        ENABLE_LIMIT_TIME_REAL_CRON=false
+        write_odoo_conf
+        sudo chmod -R 777 /var/odoo
+        REPAIRED=true
+    elif echo "$CUR_ODOO_LOGS" | grep -qiE 'PermissionError|Permission denied|EACCES'; then
+        echo "Mencoba perbaikan otomatis: memperbaiki permission /var/odoo dan addons..."
+        sudo chmod -R 777 /var/odoo "${LOCAL_ADDONS_DIR}"
+        REPAIRED=true
+    fi
+
+    if [ "$REPAIRED" = true ]; then
+        compose_cmd up -d --force-recreate odoo
+        echo "Memeriksa ulang stabilitas container odoo_app setelah perbaikan..."
+        if ! check_odoo_stable; then
+            echo "ERROR: 'odoo_app' masih restart setelah perbaikan otomatis. Log terbaru:"
+            $DOCKER_CMD logs --tail 35 odoo_app 2>&1 || true
+            exit 1
+        fi
+        echo "OK: 'odoo_app' berhasil dipulihkan dan berjalan stabil."
+    else
+        echo "ERROR: 'odoo_app' tidak dapat berjalan stabil. Periksa log di atas sebelum melanjutkan."
+        exit 1
+    fi
+else
+    echo "OK: Container 'odoo_app' berjalan stabil."
+fi
+
 echo "=========================================="
 echo "==> 9. Memasang Dependensi Python (pip)"
 echo "=========================================="
-echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
-$DOCKER_CMD exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
+if $DOCKER_CMD exec odoo_app python3 -c "import openpyxl, ofxparse, qifparse" >/dev/null 2>&1; then
+    echo "Dependensi 'openpyxl', 'ofxparse', dan 'qifparse' sudah terpasang."
+else
+    echo "Menginstal openpyxl, ofxparse, dan qifparse ke dalam container Odoo..."
+    set +e
+    if $DOCKER_CMD exec odoo_app sh -c 'command -v pip3 >/dev/null 2>&1'; then
+        $DOCKER_CMD exec -u 0 odoo_app pip3 install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
+        PIP_RC=$?
+    elif $DOCKER_CMD exec odoo_app sh -c 'command -v pip >/dev/null 2>&1'; then
+        $DOCKER_CMD exec -u 0 odoo_app pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
+        PIP_RC=$?
+    else
+        $DOCKER_CMD exec -u 0 odoo_app python3 -m pip install --no-cache-dir --break-system-packages openpyxl ofxparse qifparse
+        PIP_RC=$?
+    fi
+    set -e
+
+    if [ "$PIP_RC" -ne 0 ]; then
+        echo "PERINGATAN: Instalasi pip gagal (exit code: ${PIP_RC})."
+        if [ "$PIP_RC" -eq 137 ]; then
+            echo "Exit code 137 menandakan proses dihentikan karena RAM habis (OOM Kill)."
+        fi
+        echo "Melanjutkan ke pengecekan database..."
+    fi
+fi
 
 echo "=========================================="
 echo "==> 10. Database & Update Modul Odoo"
