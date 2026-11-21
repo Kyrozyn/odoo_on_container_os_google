@@ -342,15 +342,34 @@ EOF
 sudo chmod -R 777 /var/odoo
 
 echo "=========================================="
-echo "==> 4. Parameter Domain & Email"
+echo "==> 4. Mode Akses (Lokal / Domain & SSL)"
 echo "=========================================="
-read -p "Masukkan nama domain (default: andreascloud.my.id): " ODOO_DOMAIN
-ODOO_DOMAIN=${ODOO_DOMAIN:-andreascloud.my.id}
+echo "Pilih mode akses Odoo:"
+echo "  [1] Domain + SSL Let's Encrypt (HTTPS)"
+echo "  [2] Lokal / IP / Custom Port (HTTP, tanpa sertifikat SSL)"
+while true; do
+    read -p "Pilih mode [1/2] (default: 1): " ACCESS_MODE_CHOICE
+    ACCESS_MODE_CHOICE=${ACCESS_MODE_CHOICE:-1}
+    if [ "$ACCESS_MODE_CHOICE" = "1" ] || [ "$ACCESS_MODE_CHOICE" = "2" ]; then
+        break
+    fi
+    echo "Pilihan tidak valid. Masukkan 1 atau 2."
+done
 
-read -p "Masukkan email SSL (default: arr@e.email): " CERTBOT_EMAIL
-CERTBOT_EMAIL=${CERTBOT_EMAIL:-arr@e.email}
+USE_DOMAIN=true
+ODOO_DOMAIN=""
+CERTBOT_EMAIL=""
+LOCAL_PORT="8069"
 
-sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
+if [ "$ACCESS_MODE_CHOICE" = "1" ]; then
+    USE_DOMAIN=true
+    read -p "Masukkan nama domain (default: andreascloud.my.id): " ODOO_DOMAIN
+    ODOO_DOMAIN=${ODOO_DOMAIN:-andreascloud.my.id}
+
+    read -p "Masukkan email SSL (default: arr@e.email): " CERTBOT_EMAIL
+    CERTBOT_EMAIL=${CERTBOT_EMAIL:-arr@e.email}
+
+    sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
 server {
     listen 80 default_server;
     server_name _;
@@ -371,6 +390,18 @@ server {
     }
 }
 EOF
+else
+    USE_DOMAIN=false
+    while true; do
+        read -p "Masukkan port untuk akses Odoo lokal (default: 8069): " INPUT_LOCAL_PORT
+        LOCAL_PORT=${INPUT_LOCAL_PORT:-8069}
+        if [[ "$LOCAL_PORT" =~ ^[0-9]+$ ]] && [ "$LOCAL_PORT" -ge 1 ] && [ "$LOCAL_PORT" -le 65535 ]; then
+            break
+        fi
+        echo "Port tidak valid. Masukkan angka 1-65535."
+    done
+    echo "Mode lokal dipilih: Odoo akan listen pada port ${LOCAL_PORT} (HTTP tanpa SSL)."
+fi
 
 echo "=========================================="
 echo "==> 5. Membuat docker-compose.yml"
@@ -449,17 +480,32 @@ EOF
     image: nginx:alpine
     container_name: odoo_nginx
     ports:
+EOF
+    if [ "$USE_DOMAIN" = true ]; then
+        cat <<EOF
       - "80:80"
       - "443:443"
     volumes:
       - /var/odoo/nginx_conf:/etc/nginx/conf.d:ro
       - /var/odoo/letsencrypt:/etc/letsencrypt:ro
       - /var/odoo/certbot_www:/var/www/certbot:ro
+EOF
+    else
+        cat <<EOF
+      - "${LOCAL_PORT}:80"
+    volumes:
+      - /var/odoo/nginx_conf:/etc/nginx/conf.d:ro
+EOF
+    fi
+    cat <<EOF
     depends_on:
       - odoo
     networks:
       - odoo-net
     restart: always
+EOF
+    if [ "$USE_DOMAIN" = true ]; then
+        cat <<EOF
 
   certbot:
     image: certbot/certbot
@@ -471,32 +517,34 @@ EOF
     networks:
       - odoo-net
 EOF
+    fi
 } | sudo tee /var/odoo/docker-compose.yml > /dev/null
 
-echo "Menjalankan Nginx untuk verifikasi ACME..."
-compose_cmd up -d nginx
+if [ "$USE_DOMAIN" = true ]; then
+    echo "Menjalankan Nginx untuk verifikasi ACME..."
+    compose_cmd up -d nginx
 
-echo "=========================================="
-echo "==> 6. Menerbitkan Sertifikat SSL"
-echo "=========================================="
-if [ ! -f "/var/odoo/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem" ]; then
-    echo "Meminta sertifikat Let's Encrypt..."
-    $DOCKER_CMD run -it --rm \
-      -v /var/odoo/letsencrypt:/etc/letsencrypt \
-      -v /var/odoo/certbot_www:/var/www/certbot \
-      certbot/certbot certonly --webroot \
-      --webroot-path=/var/www/certbot \
-      --email "${CERTBOT_EMAIL}" \
-      --agree-tos --no-eff-email \
-      -d "${ODOO_DOMAIN}"
-else
-    echo "Sertifikat SSL untuk ${ODOO_DOMAIN} sudah tersedia."
-fi
+    echo "=========================================="
+    echo "==> 6. Menerbitkan Sertifikat SSL"
+    echo "=========================================="
+    if [ ! -f "/var/odoo/letsencrypt/live/${ODOO_DOMAIN}/fullchain.pem" ]; then
+        echo "Meminta sertifikat Let's Encrypt..."
+        $DOCKER_CMD run -it --rm \
+          -v /var/odoo/letsencrypt:/etc/letsencrypt \
+          -v /var/odoo/certbot_www:/var/www/certbot \
+          certbot/certbot certonly --webroot \
+          --webroot-path=/var/www/certbot \
+          --email "${CERTBOT_EMAIL}" \
+          --agree-tos --no-eff-email \
+          -d "${ODOO_DOMAIN}"
+    else
+        echo "Sertifikat SSL untuk ${ODOO_DOMAIN} sudah tersedia."
+    fi
 
-echo "=========================================="
-echo "==> 7. Mengaktifkan Nginx HTTPS (Timeout Maksimal)"
-echo "=========================================="
-sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
+    echo "=========================================="
+    echo "==> 7. Mengaktifkan Nginx HTTPS (Timeout Maksimal)"
+    echo "=========================================="
+    sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
 upstream odoo {
     server odoo:8069;
 }
@@ -569,12 +617,70 @@ server {
     gzip on;
 }
 EOF
+else
+    echo "=========================================="
+    echo "==> 6. Sertifikat SSL (Dilewati - Mode Lokal)"
+    echo "=========================================="
+    echo "Mode lokal aktif: tidak perlu menerbitkan sertifikat SSL."
+
+    echo "=========================================="
+    echo "==> 7. Mengaktifkan Nginx HTTP Lokal (Port ${LOCAL_PORT})"
+    echo "=========================================="
+    sudo tee /var/odoo/nginx_conf/odoo.conf > /dev/null <<EOF
+upstream odoo {
+    server odoo:8069;
+}
+
+upstream odoo-chat {
+    server odoo:8072;
+}
+
+server {
+    listen 80 default_server;
+    server_name _;
+
+    proxy_read_timeout 36000s;
+    proxy_connect_timeout 36000s;
+    proxy_send_timeout 36000s;
+    send_timeout 36000s;
+    keepalive_timeout 36000s;
+
+    access_log /var/log/nginx/odoo.access.log;
+    error_log /var/log/nginx/odoo.error.log;
+
+    location /longpolling {
+        proxy_pass http://odoo-chat;
+    }
+
+    location / {
+        proxy_pass http://odoo;
+        proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+        proxy_redirect off;
+
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    client_max_body_size 256M;
+    proxy_buffers 16 1024k;
+    proxy_buffer_size 1024k;
+
+    gzip_types text/css text/less text/plain text/xml application/xml application/json application/javascript;
+    gzip on;
+}
+EOF
+fi
 
 echo "=========================================="
 echo "==> 8. Menjalankan Seluruh Stack"
 echo "=========================================="
 compose_cmd up -d
-$DOCKER_CMD exec odoo_nginx nginx -s reload
+if [ "$USE_DOMAIN" = true ]; then
+    $DOCKER_CMD exec odoo_nginx nginx -s reload
+fi
 
 echo "=========================================="
 echo "==> 9. Memasang Dependensi Python (pip)"
@@ -710,5 +816,9 @@ fi
 if [ "$DB_INSTALLED" -eq 1 ]; then
     echo "Database Odoo '${NEW_DB_NAME}' telah berhasil diinstall (login default: admin / admin)."
 fi
-echo "Akses Odoo di: https://${ODOO_DOMAIN}"
+if [ "$USE_DOMAIN" = true ]; then
+    echo "Akses Odoo di: https://${ODOO_DOMAIN}"
+else
+    echo "Akses Odoo di: http://localhost:${LOCAL_PORT} (atau http://<IP-SERVER>:${LOCAL_PORT})"
+fi
 echo "=========================================="
