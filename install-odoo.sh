@@ -151,13 +151,24 @@ echo "=========================================="
 echo "==> 1b. Deteksi PostgreSQL yang Sedang Berjalan"
 echo "=========================================="
 
+generate_random_password() {
+    local pw=""
+    if command -v openssl >/dev/null 2>&1; then
+        pw=$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 24 || true)
+    fi
+    if [ "${#pw}" -lt 24 ]; then
+        pw=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom 2>/dev/null | head -c 24 || true)
+    fi
+    echo "$pw"
+}
+
 USE_NEW_PG=true
 EXISTING_PG_TYPE=""
 EXISTING_PG_CONTAINER=""
 PG_HOST="db"
 PG_PORT="5432"
 PG_USER="odoo"
-PG_PASS="tAIre2vRTXDgRFSlqUy2kBFF"
+PG_PASS=$(generate_random_password)
 
 DETECTED_PG_TYPES=()
 DETECTED_PG_NAMES=()
@@ -272,25 +283,116 @@ if [ "${#DETECTED_PG_TYPES[@]}" -gt 0 ]; then
             fi
         fi
 
-        echo "Menggunakan PostgreSQL yang sudah ada: ${DETECTED_PG_DESCS[$SELECTED_IDX]}"
-        read -p "Host PostgreSQL untuk Odoo (default: ${DEFAULT_PG_HOST}): " INPUT_PG_HOST
-        PG_HOST=${INPUT_PG_HOST:-$DEFAULT_PG_HOST}
+        test_existing_pg_connection() {
+            if [ "$EXISTING_PG_TYPE" = "container" ] && [ "$PG_HOST" = "$EXISTING_PG_CONTAINER" ]; then
+                $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 "${EXISTING_PG_CONTAINER}" \
+                    psql -h 127.0.0.1 -p "${PG_PORT}" -U "${PG_USER}" -d postgres -tAc "SELECT 1;" 2>&1
+                return $?
+            fi
 
+            local test_image=""
+            local img
+            for img in postgres:16-alpine postgres:16 postgres:15-alpine postgres:15; do
+                if $DOCKER_CMD image inspect "$img" >/dev/null 2>&1; then
+                    test_image="$img"
+                    break
+                fi
+            done
+
+            if [ -n "$test_image" ]; then
+                $DOCKER_CMD run --rm --add-host=host.docker.internal:host-gateway \
+                    -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 "$test_image" \
+                    psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d postgres -tAc "SELECT 1;" 2>&1
+                return $?
+            elif $DOCKER_CMD image inspect odoo:latest >/dev/null 2>&1; then
+                $DOCKER_CMD run --rm --entrypoint python3 --add-host=host.docker.internal:host-gateway \
+                    -e PG_HOST="${PG_HOST}" -e PG_PORT="${PG_PORT}" -e PG_USER="${PG_USER}" -e PG_PASS="${PG_PASS}" \
+                    odoo:latest -c "import os, psycopg2; conn=psycopg2.connect(host=os.environ['PG_HOST'], port=int(os.environ['PG_PORT']), user=os.environ['PG_USER'], password=os.environ['PG_PASS'], dbname='postgres', connect_timeout=5); cur=conn.cursor(); cur.execute('SELECT 1'); print(cur.fetchone()[0]); conn.close()" 2>&1
+                return $?
+            else
+                $DOCKER_CMD run --rm --add-host=host.docker.internal:host-gateway \
+                    -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 postgres:16-alpine \
+                    psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d postgres -tAc "SELECT 1;" 2>&1
+                return $?
+            fi
+        }
+
+        echo "Menggunakan PostgreSQL yang sudah ada: ${DETECTED_PG_DESCS[$SELECTED_IDX]}"
         while true; do
-            read -p "Port PostgreSQL (default: ${DEFAULT_PG_PORT}): " INPUT_PG_PORT
-            PG_PORT=${INPUT_PG_PORT:-$DEFAULT_PG_PORT}
-            if [[ "$PG_PORT" =~ ^[0-9]+$ ]] && [ "$PG_PORT" -ge 1 ] && [ "$PG_PORT" -le 65535 ]; then
+            read -p "Host PostgreSQL untuk Odoo (default: ${DEFAULT_PG_HOST}): " INPUT_PG_HOST
+            PG_HOST=${INPUT_PG_HOST:-$DEFAULT_PG_HOST}
+
+            while true; do
+                read -p "Port PostgreSQL (default: ${DEFAULT_PG_PORT}): " INPUT_PG_PORT
+                PG_PORT=${INPUT_PG_PORT:-$DEFAULT_PG_PORT}
+                if [[ "$PG_PORT" =~ ^[0-9]+$ ]] && [ "$PG_PORT" -ge 1 ] && [ "$PG_PORT" -le 65535 ]; then
+                    break
+                fi
+                echo "Port tidak valid. Masukkan angka 1-65535."
+            done
+
+            read -p "User PostgreSQL (default: odoo): " INPUT_PG_USER
+            PG_USER=${INPUT_PG_USER:-odoo}
+
+            EXISTING_CONF_PASS=""
+            if [ -f /var/odoo/config/odoo.conf ]; then
+                EXISTING_CONF_PASS=$(awk -F'=' '/^[[:space:]]*db_password[[:space:]]*=/{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit}' /var/odoo/config/odoo.conf 2>/dev/null || true)
+            fi
+
+            while true; do
+                if [ -n "$EXISTING_CONF_PASS" ]; then
+                    read -s -p "Password PostgreSQL (kosongkan untuk memakai password dari odoo.conf sebelumnya): " INPUT_PG_PASS
+                    echo ""
+                    PG_PASS=${INPUT_PG_PASS:-$EXISTING_CONF_PASS}
+                else
+                    read -s -p "Password PostgreSQL: " INPUT_PG_PASS
+                    echo ""
+                    PG_PASS=${INPUT_PG_PASS}
+                fi
+                if [ -n "$PG_PASS" ]; then
+                    break
+                fi
+                echo "Password PostgreSQL tidak boleh kosong."
+            done
+
+            echo "Menguji koneksi ke PostgreSQL (${PG_HOST}:${PG_PORT}) dengan user '${PG_USER}'..."
+            set +e
+            PG_TEST_OUT=$(test_existing_pg_connection)
+            PG_TEST_RC=$?
+            set -e
+
+            if [ "$PG_TEST_RC" -eq 0 ] && echo "$PG_TEST_OUT" | grep -qx "1"; then
+                echo "OK: Koneksi ke PostgreSQL berhasil!"
                 break
             fi
-            echo "Port tidak valid. Masukkan angka 1-65535."
+
+            echo ""
+            echo "GAGAL: Tidak dapat terhubung ke PostgreSQL (${PG_HOST}:${PG_PORT}) dengan user '${PG_USER}'."
+            if [ -n "$PG_TEST_OUT" ]; then
+                echo "Detail: ${PG_TEST_OUT}"
+            fi
+            echo ""
+            echo "Pilihan:"
+            echo "  [1] Masukkan ulang host/port/user/password PostgreSQL"
+            echo "  [2] Buat container PostgreSQL baru (odoo_db) saja"
+            echo "  [3] Tetap lanjutkan dengan setting ini"
+            read -p "Pilih [1/2/3] (default: 1): " PG_RETRY_CHOICE
+            PG_RETRY_CHOICE=${PG_RETRY_CHOICE:-1}
+            if [ "$PG_RETRY_CHOICE" = "2" ]; then
+                USE_NEW_PG=true
+                EXISTING_PG_TYPE=""
+                EXISTING_PG_CONTAINER=""
+                PG_HOST="db"
+                PG_PORT="5432"
+                PG_USER="odoo"
+                PG_PASS=$(generate_random_password)
+                echo "Beralih membuat container PostgreSQL baru (odoo_db)."
+                break
+            elif [ "$PG_RETRY_CHOICE" = "3" ]; then
+                echo "Melanjutkan dengan konfigurasi PostgreSQL saat ini..."
+                break
+            fi
         done
-
-        read -p "User PostgreSQL (default: odoo): " INPUT_PG_USER
-        PG_USER=${INPUT_PG_USER:-odoo}
-
-        read -s -p "Password PostgreSQL (kosongkan untuk default script): " INPUT_PG_PASS
-        echo ""
-        PG_PASS=${INPUT_PG_PASS:-tAIre2vRTXDgRFSlqUy2kBFF}
     fi
 else
     echo "Tidak ada PostgreSQL yang sedang berjalan terdeteksi. Akan membuat container PostgreSQL baru (odoo_db)."
@@ -694,32 +796,46 @@ echo "=========================================="
 run_pg_isready() {
     if [ "$USE_NEW_PG" = true ]; then
         $DOCKER_CMD exec odoo_db pg_isready -U "${PG_USER}" -d postgres
+    elif [ "$EXISTING_PG_TYPE" = "container" ] && [ "$PG_HOST" = "$EXISTING_PG_CONTAINER" ]; then
+        $DOCKER_CMD exec "${EXISTING_PG_CONTAINER}" pg_isready -h 127.0.0.1 -p "${PG_PORT}" -U "${PG_USER}" -d postgres
     elif $DOCKER_CMD exec odoo_app sh -c 'command -v pg_isready >/dev/null 2>&1'; then
         $DOCKER_CMD exec odoo_app pg_isready -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d postgres
     else
-        $DOCKER_CMD run --rm --network odoo-net --add-host=host.docker.internal:host-gateway postgres:16 pg_isready -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d postgres
+        $DOCKER_CMD run --rm --network odoo-net --add-host=host.docker.internal:host-gateway postgres:16-alpine pg_isready -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d postgres
     fi
 }
 
 run_psql() {
     if [ "$USE_NEW_PG" = true ]; then
         $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_db psql -U "${PG_USER}" "$@"
+    elif [ "$EXISTING_PG_TYPE" = "container" ] && [ "$PG_HOST" = "$EXISTING_PG_CONTAINER" ]; then
+        $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 "${EXISTING_PG_CONTAINER}" psql -h 127.0.0.1 -p "${PG_PORT}" -U "${PG_USER}" "$@"
     elif $DOCKER_CMD exec odoo_app sh -c 'command -v psql >/dev/null 2>&1'; then
-        $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" odoo_app psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" "$@"
+        $DOCKER_CMD exec -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 odoo_app psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" "$@"
     else
-        $DOCKER_CMD run --rm --network odoo-net --add-host=host.docker.internal:host-gateway -e PGPASSWORD="${PG_PASS}" postgres:16 psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" "$@"
+        $DOCKER_CMD run --rm --network odoo-net --add-host=host.docker.internal:host-gateway -e PGPASSWORD="${PG_PASS}" -e PGCONNECT_TIMEOUT=5 postgres:16-alpine psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" "$@"
     fi
 }
 
-echo "Menunggu PostgreSQL siap..."
 PG_READY=false
-for i in $(seq 1 30); do
+if [ "$USE_NEW_PG" = true ]; then
+    echo "Menunggu PostgreSQL baru (odoo_db) siap..."
+    for i in $(seq 1 30); do
+        if run_pg_isready >/dev/null 2>&1; then
+            PG_READY=true
+            break
+        fi
+        sleep 1
+    done
+    if [ "$PG_READY" = true ]; then
+        $DOCKER_CMD exec odoo_db psql -U "${PG_USER}" -d postgres -c "ALTER USER \"${PG_USER}\" WITH PASSWORD '${PG_PASS}';" >/dev/null 2>&1 || true
+    fi
+else
+    echo "Memeriksa koneksi ke PostgreSQL (${PG_HOST}:${PG_PORT})..."
     if run_pg_isready >/dev/null 2>&1; then
         PG_READY=true
-        break
     fi
-    sleep 1
-done
+fi
 
 UPDATED_COUNT=0
 DB_INSTALLED=0
@@ -815,6 +931,9 @@ if [ "$UPDATED_COUNT" -gt 0 ]; then
 fi
 if [ "$DB_INSTALLED" -eq 1 ]; then
     echo "Database Odoo '${NEW_DB_NAME}' telah berhasil diinstall (login default: admin / admin)."
+fi
+if [ "$USE_NEW_PG" = true ]; then
+    echo "Password PostgreSQL (${PG_USER}): ${PG_PASS} (tersimpan di /var/odoo/config/odoo.conf)"
 fi
 if [ "$USE_DOMAIN" = true ]; then
     echo "Akses Odoo di: https://${ODOO_DOMAIN}"
