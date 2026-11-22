@@ -19,6 +19,9 @@ export function Instances({
   const [showCreate, setShowCreate] = useState(false)
   const [creating, setCreating] = useState(false)
   const [cardBusy, setCardBusy] = useState<Record<string, string>>({})
+  const [deleteTarget, setDeleteTarget] = useState<OdooInstance | null>(null)
+  const [deleteData, setDeleteData] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Create form state
   const [name, setName] = useState('')
@@ -113,18 +116,26 @@ export function Instances({
     }
   }
 
-  const handleDelete = async (e: React.MouseEvent, inst: OdooInstance) => {
+  const openDeleteModal = (e: React.MouseEvent, inst: OdooInstance) => {
     e.stopPropagation()
-    if (!confirm(`Delete Odoo instance "${inst.name}"?`)) return
-    const deleteData = confirm('Also delete persistent data & filestore from disk?')
+    setDeleteData(false)
+    setDeleteTarget(inst)
+  }
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return
+    const inst = deleteTarget
+    setDeleting(true)
     setCardBusy((prev) => ({ ...prev, [inst.id]: 'delete' }))
     try {
       await api.deleteInstance(inst.id, deleteData)
       notify(`Instance "${inst.name}" deleted`)
-      load()
+      setDeleteTarget(null)
+      await load()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Delete failed', 'error')
     } finally {
+      setDeleting(false)
       setCardBusy((prev) => {
         const next = { ...prev }
         delete next[inst.id]
@@ -257,12 +268,17 @@ export function Instances({
                 )}
               </div>
               <button
+                type="button"
                 title="Delete"
                 disabled={!!cardBusy[inst.id]}
-                onClick={(e) => handleDelete(e, inst)}
+                onClick={(e) => openDeleteModal(e, inst)}
                 className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 disabled:opacity-40 cursor-pointer"
               >
-                <Trash2 className="h-4 w-4" />
+                {cardBusy[inst.id] === 'delete' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
               </button>
             </div>
           </div>
@@ -501,6 +517,52 @@ export function Instances({
             </button>
           </div>
         </form>
+      </Modal>
+      <Modal
+        open={!!deleteTarget}
+        onClose={() => !deleting && setDeleteTarget(null)}
+        title={`Delete "${deleteTarget?.name}"`}
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            Apakah Anda yakin ingin menghapus instance Odoo{' '}
+            <span className="font-semibold text-slate-900">{deleteTarget?.name}</span>?
+            Container Odoo{deleteTarget?.dbMode === 'dedicated' ? ' dan container PostgreSQL dedicated' : ''} akan dihentikan dan dihapus.
+          </p>
+
+          <label className="flex items-start gap-2.5 rounded-lg border border-rose-200 bg-rose-50/70 p-3 text-xs text-rose-800 cursor-pointer">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={deleteData}
+              disabled={deleting}
+              onChange={(e) => setDeleteData(e.target.checked)}
+            />
+            <span>
+              <strong>Hapus juga data persisten &amp; filestore di disk</strong> (tidak bisa dikembalikan).
+            </span>
+          </label>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={() => setDeleteTarget(null)}
+              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={deleting}
+              onClick={confirmDelete}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700 disabled:opacity-60 cursor-pointer"
+            >
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+              {deleting ? 'Deleting...' : 'Delete Instance'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   )
