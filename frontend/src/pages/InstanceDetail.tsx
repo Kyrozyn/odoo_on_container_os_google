@@ -50,7 +50,8 @@ export function InstanceDetail({
   const [newDbName, setNewDbName] = useState('')
   const [upgradeDb, setUpgradeDb] = useState('')
   const [upgradeMods, setUpgradeMods] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busyAction, setBusyAction] = useState<string | null>(null)
+  const busy = busyAction !== null
   const [deploy, setDeploy] = useState<DeployProgress | null>(null)
   const [hideDeployCard, setHideDeployCard] = useState(false)
   const deployLogEndRef = useRef<HTMLDivElement | null>(null)
@@ -135,7 +136,7 @@ export function InstanceDetail({
   }
 
   const runAction = async (action: 'start' | 'stop' | 'restart') => {
-    setBusy(true)
+    setBusyAction(action)
     try {
       if (action === 'start') await api.startInstance(inst.id)
       if (action === 'stop') await api.stopInstance(inst.id)
@@ -145,7 +146,7 @@ export function InstanceDetail({
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Action failed', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
@@ -176,7 +177,7 @@ export function InstanceDetail({
   }
 
   const handleIssueSsl = async (domain: string) => {
-    setBusy(true)
+    setBusyAction(`ssl:${domain}`)
     try {
       await api.issueInstanceSsl(inst.id, domain)
       notify(`Let's Encrypt SSL enabled for ${domain}!`)
@@ -184,14 +185,14 @@ export function InstanceDetail({
     } catch (err) {
       notify(err instanceof Error ? err.message : 'SSL issuance failed', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
   const handleCreateDb = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newDbName.trim()) return
-    setBusy(true)
+    setBusyAction('create-db')
     try {
       await api.createDatabase(inst.id, newDbName.trim())
       setNewDbName('')
@@ -201,14 +202,14 @@ export function InstanceDetail({
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Create DB failed', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
   const handleToggleAddon = async (repoId: string) => {
     const current = inst.addonRepoIds || []
     const next = current.includes(repoId) ? current.filter((x) => x !== repoId) : [...current, repoId]
-    setBusy(true)
+    setBusyAction(`addon:${repoId}`)
     try {
       await api.updateInstance(inst.id, { addonRepoIds: next, redeploy: true })
       notify('Redeployment started...')
@@ -218,7 +219,7 @@ export function InstanceDetail({
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed updating addons', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
@@ -226,7 +227,7 @@ export function InstanceDetail({
     e.preventDefault()
     const mods = upgradeMods.split(',').map((s) => s.trim()).filter(Boolean)
     if (!upgradeDb || mods.length === 0) return
-    setBusy(true)
+    setBusyAction('upgrade')
     try {
       await api.upgradeModules(inst.id, upgradeDb, mods)
       notify(`Upgraded modules (${mods.join(', ')}) on ${upgradeDb}!`)
@@ -234,12 +235,12 @@ export function InstanceDetail({
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Module upgrade failed', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
   const handleSaveConfig = async (redeploy: boolean) => {
-    setBusy(true)
+    setBusyAction('save-conf')
     try {
       await api.updateInstance(inst.id, {
         customConf,
@@ -257,7 +258,7 @@ export function InstanceDetail({
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed saving config', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
@@ -313,18 +314,34 @@ export function InstanceDetail({
           <button
             disabled={busy}
             onClick={() => runAction(inst.status === 'running' ? 'stop' : 'start')}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
           >
-            {inst.status === 'running' ? <Square className="h-4 w-4 text-amber-600" /> : <Play className="h-4 w-4 text-emerald-600" />}
-            {inst.status === 'running' ? 'Stop' : 'Start'}
+            {busyAction === 'stop' || busyAction === 'start' ? (
+              <Loader2 className="h-4 w-4 animate-spin text-[#714B67]" />
+            ) : inst.status === 'running' ? (
+              <Square className="h-4 w-4 text-amber-600" />
+            ) : (
+              <Play className="h-4 w-4 text-emerald-600" />
+            )}
+            {busyAction === 'stop'
+              ? 'Stopping...'
+              : busyAction === 'start'
+              ? 'Starting...'
+              : inst.status === 'running'
+              ? 'Stop'
+              : 'Start'}
           </button>
           <button
             disabled={busy}
             onClick={() => runAction('restart')}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 cursor-pointer"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60 cursor-pointer"
           >
-            <RotateCw className="h-4 w-4" />
-            Restart
+            {busyAction === 'restart' ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RotateCw className="h-4 w-4" />
+            )}
+            {busyAction === 'restart' ? 'Restarting...' : 'Restart'}
           </button>
         </div>
       </div>
@@ -520,9 +537,10 @@ export function InstanceDetail({
                     <button
                       disabled={busy}
                       onClick={() => handleIssueSsl(d.domain)}
-                      className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 cursor-pointer"
+                      className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60 cursor-pointer"
                     >
-                      {d.hasSsl ? 'Renew SSL' : 'Enable HTTPS (Certbot)'}
+                      {busyAction === `ssl:${d.domain}` && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {busyAction === `ssl:${d.domain}` ? 'Issuing SSL...' : d.hasSsl ? 'Renew SSL' : 'Enable HTTPS (Certbot)'}
                     </button>
                     <button
                       onClick={() => handleRemoveDomain(d.domain)}
@@ -553,9 +571,10 @@ export function InstanceDetail({
               <button
                 type="submit"
                 disabled={busy}
-                className="inline-flex items-center gap-1 rounded-lg bg-[#714B67] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#5c3c54] cursor-pointer"
+                className="inline-flex items-center gap-1 rounded-lg bg-[#714B67] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
               >
-                <Plus className="h-4 w-4" /> Create DB
+                {busyAction === 'create-db' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                {busyAction === 'create-db' ? 'Creating...' : 'Create DB'}
               </button>
             </form>
           </div>
@@ -578,31 +597,42 @@ export function InstanceDetail({
                     <td className="py-2.5 text-xs text-slate-600">{db.sizePretty}</td>
                     <td className="py-2.5 text-right space-x-2">
                       <button
+                        disabled={busy}
                         onClick={async () => {
-                          setBusy(true)
+                          setBusyAction(`backup:${db.name}`)
                           try {
                             await api.createBackup(inst.id, db.name)
                             notify(`Backup created for ${db.name}!`)
                           } catch (err) {
                             notify(err instanceof Error ? err.message : 'Backup failed', 'error')
                           } finally {
-                            setBusy(false)
+                            setBusyAction(null)
                           }
                         }}
-                        className="rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                        className="inline-flex items-center gap-1 rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
                       >
-                        Backup ZIP
+                        {busyAction === `backup:${db.name}` && <Loader2 className="h-3 w-3 animate-spin" />}
+                        {busyAction === `backup:${db.name}` ? 'Backing up...' : 'Backup ZIP'}
                       </button>
                       <button
+                        disabled={busy}
                         onClick={async () => {
                           if (!confirm(`Drop database "${db.name}" and its filestore?`)) return
-                          await api.dropDatabase(inst.id, db.name)
-                          notify(`Database ${db.name} dropped`)
-                          setDbs(await api.listInstanceDatabases(inst.id))
+                          setBusyAction(`drop:${db.name}`)
+                          try {
+                            await api.dropDatabase(inst.id, db.name)
+                            notify(`Database ${db.name} dropped`)
+                            setDbs(await api.listInstanceDatabases(inst.id))
+                          } catch (err) {
+                            notify(err instanceof Error ? err.message : 'Drop failed', 'error')
+                          } finally {
+                            setBusyAction(null)
+                          }
                         }}
-                        className="rounded border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 cursor-pointer"
+                        className="inline-flex items-center gap-1 rounded border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-60 cursor-pointer"
                       >
-                        Drop
+                        {busyAction === `drop:${db.name}` && <Loader2 className="h-3 w-3 animate-spin" />}
+                        {busyAction === `drop:${db.name}` ? 'Dropping...' : 'Drop'}
                       </button>
                     </td>
                   </tr>
@@ -634,7 +664,7 @@ export function InstanceDetail({
                 <button
                   disabled={busy}
                   onClick={async () => {
-                    setBusy(true)
+                    setBusyAction('save-recs')
                     try {
                       await api.updateInstance(inst.id, { recommendedAddons: selectedRecs, redeploy: true })
                       notify('Redeployment started...')
@@ -644,12 +674,13 @@ export function InstanceDetail({
                     } catch (err) {
                       notify(err instanceof Error ? err.message : 'Failed updating recommended addons', 'error')
                     } finally {
-                      setBusy(false)
+                      setBusyAction(null)
                     }
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#5c3c54] cursor-pointer"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
                 >
-                  <Save className="h-3.5 w-3.5" /> Save &amp; Redeploy ({selectedRecs.length})
+                  {busyAction === 'save-recs' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                  {busyAction === 'save-recs' ? 'Saving...' : `Save & Redeploy (${selectedRecs.length})`}
                 </button>
               </div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -785,9 +816,10 @@ export function InstanceDetail({
               <button
                 disabled={busy}
                 onClick={() => handleSaveConfig(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] cursor-pointer"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
               >
-                <Save className="h-4 w-4" /> Save &amp; Redeploy
+                {busyAction === 'save-conf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                {busyAction === 'save-conf' ? 'Saving & Redeploying...' : 'Save & Redeploy'}
               </button>
             </div>
           </div>

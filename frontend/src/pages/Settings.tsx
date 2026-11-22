@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Globe, KeyRound, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Globe, KeyRound, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { api } from '../api/client'
 import type { PanelSettings } from '../types'
 
@@ -11,7 +11,8 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
   const [forceHttps, setForceHttps] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busyAction, setBusyAction] = useState<'save' | 'ssl' | 'nginx' | 'password' | null>(null)
+  const busy = busyAction !== null
 
   const load = async () => {
     try {
@@ -32,7 +33,7 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault()
-    setBusy(true)
+    setBusyAction('save')
     try {
       const s = await api.updateSettings({
         rootDomain,
@@ -45,12 +46,12 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed saving settings', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
   const handleEnableSsl = async () => {
-    setBusy(true)
+    setBusyAction('ssl')
     try {
       const res = await api.enablePanelSsl()
       notify(`HTTPS enabled for ${res.domain}!`)
@@ -58,12 +59,13 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed enabling SSL', 'error')
     } finally {
-      setBusy(false)
+      setBusyAction(null)
     }
   }
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault()
+    setBusyAction('password')
     try {
       await api.changePassword(currentPassword, newPassword)
       setCurrentPassword('')
@@ -71,6 +73,8 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
       notify('Admin password updated!')
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Password change failed', 'error')
+    } finally {
+      setBusyAction(null)
     }
   }
 
@@ -139,9 +143,10 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
             <button
               type="submit"
               disabled={busy}
-              className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
             >
-              Save Domain Settings
+              {busyAction === 'save' && <Loader2 className="h-4 w-4 animate-spin" />}
+              {busyAction === 'save' ? 'Saving...' : 'Save Domain Settings'}
             </button>
             <button
               type="button"
@@ -149,21 +154,27 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
               onClick={handleEnableSsl}
               className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50 cursor-pointer"
             >
-              <ShieldCheck className="h-4 w-4" /> Enable HTTPS (Certbot)
+              {busyAction === 'ssl' ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
+              {busyAction === 'ssl' ? 'Issuing SSL...' : 'Enable HTTPS (Certbot)'}
             </button>
             <button
               type="button"
+              disabled={busy}
               onClick={async () => {
+                setBusyAction('nginx')
                 try {
                   await api.syncProxy()
                   notify('Nginx proxy container synced & reloaded!')
                 } catch (err) {
                   notify(err instanceof Error ? err.message : 'Nginx sync failed', 'error')
+                } finally {
+                  setBusyAction(null)
                 }
               }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
             >
-              <RefreshCw className="h-4 w-4" /> Ensure / Reload Nginx
+              {busyAction === 'nginx' ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              {busyAction === 'nginx' ? 'Syncing Nginx...' : 'Ensure / Reload Nginx'}
             </button>
           </div>
         </form>
@@ -195,9 +206,11 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
           />
           <button
             type="submit"
-            className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 cursor-pointer"
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60 cursor-pointer"
           >
-            Update Password
+            {busyAction === 'password' && <Loader2 className="h-4 w-4 animate-spin" />}
+            {busyAction === 'password' ? 'Updating...' : 'Update Password'}
           </button>
         </form>
       </div>

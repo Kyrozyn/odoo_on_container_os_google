@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Play, RefreshCw, RotateCw, Square, Terminal } from 'lucide-react'
+import { Loader2, Play, RefreshCw, RotateCw, Square, Terminal } from 'lucide-react'
 import { api } from '../api/client'
 import type { ContainerSummary } from '../types'
 import { Modal, StatusBadge } from '../components/UI'
@@ -8,6 +8,7 @@ export function Containers({ notify }: { notify: (msg: string, type?: 'success' 
   const [containers, setContainers] = useState<ContainerSummary[]>([])
   const [onlyManaged, setOnlyManaged] = useState(true)
   const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState<string | null>(null)
   const [logModal, setLogModal] = useState<{ name: string; logs: string } | null>(null)
 
   const load = async () => {
@@ -26,6 +27,7 @@ export function Containers({ notify }: { notify: (msg: string, type?: 'success' 
   }, [onlyManaged])
 
   const act = async (id: string, action: 'start' | 'stop' | 'restart') => {
+    setBusyId(id)
     try {
       if (action === 'start') await api.startContainer(id)
       if (action === 'stop') await api.stopContainer(id)
@@ -34,6 +36,8 @@ export function Containers({ notify }: { notify: (msg: string, type?: 'success' 
       load()
     } catch (err) {
       notify(err instanceof Error ? err.message : `Failed to ${action}`, 'error')
+    } finally {
+      setBusyId(null)
     }
   }
 
@@ -96,21 +100,29 @@ export function Containers({ notify }: { notify: (msg: string, type?: 'success' 
                       <StatusBadge status={c.State} />
                     </td>
                     <td className="px-5 py-3 text-right space-x-1">
-                      <button title="Logs" onClick={() => openLogs(c)} className="rounded p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer">
-                        <Terminal className="h-4 w-4" />
-                      </button>
-                      {c.State !== 'running' ? (
-                        <button title="Start" onClick={() => act(c.Id, 'start')} className="rounded p-1.5 text-emerald-600 hover:bg-emerald-50 cursor-pointer">
-                          <Play className="h-4 w-4" />
-                        </button>
+                      {busyId === c.Id ? (
+                        <span className="inline-flex items-center gap-1 text-xs text-[#714B67]">
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Working...
+                        </span>
                       ) : (
-                        <button title="Stop" onClick={() => act(c.Id, 'stop')} className="rounded p-1.5 text-amber-600 hover:bg-amber-50 cursor-pointer">
-                          <Square className="h-4 w-4" />
-                        </button>
+                        <>
+                          <button title="Logs" onClick={() => openLogs(c)} className="rounded p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer">
+                            <Terminal className="h-4 w-4" />
+                          </button>
+                          {c.State !== 'running' ? (
+                            <button title="Start" onClick={() => act(c.Id, 'start')} className="rounded p-1.5 text-emerald-600 hover:bg-emerald-50 cursor-pointer">
+                              <Play className="h-4 w-4" />
+                            </button>
+                          ) : (
+                            <button title="Stop" onClick={() => act(c.Id, 'stop')} className="rounded p-1.5 text-amber-600 hover:bg-amber-50 cursor-pointer">
+                              <Square className="h-4 w-4" />
+                            </button>
+                          )}
+                          <button title="Restart" onClick={() => act(c.Id, 'restart')} className="rounded p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer">
+                            <RotateCw className="h-4 w-4" />
+                          </button>
+                        </>
                       )}
-                      <button title="Restart" onClick={() => act(c.Id, 'restart')} className="rounded p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer">
-                        <RotateCw className="h-4 w-4" />
-                      </button>
                     </td>
                   </tr>
                 )

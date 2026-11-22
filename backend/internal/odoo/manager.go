@@ -489,6 +489,9 @@ func (m *Manager) renderOdooConf(inst models.OdooInstance) string {
 
 	var sb strings.Builder
 	sb.WriteString("[options]\n")
+	sb.WriteString("http_interface = 0.0.0.0\n")
+	sb.WriteString("http_port = 8069\n")
+	sb.WriteString("gevent_port = 8072\n")
 	sb.WriteString(fmt.Sprintf("admin_passwd = %s\n", inst.AdminPassword))
 	sb.WriteString(fmt.Sprintf("db_host = %s\n", inst.DBHost))
 	sb.WriteString(fmt.Sprintf("db_port = %d\n", inst.DBPort))

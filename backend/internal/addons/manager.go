@@ -241,7 +241,6 @@ func (m *Manager) ComputeAddonsPath(repoIDs []string, recommendedSelected []stri
 
 	pathsSet := map[string]bool{
 		"/usr/lib/python3/dist-packages/odoo/addons": true,
-		"/mnt/extra-addons":                          true,
 	}
 
 	for _, id := range repoIDs {

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { GitBranch, Package, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react'
+import { GitBranch, Loader2, Package, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react'
 import { api } from '../api/client'
 import type { AddonModule, AddonRepo } from '../types'
 import { Modal } from '../components/UI'
@@ -11,6 +11,7 @@ export function Addons({ notify }: { notify: (msg: string, type?: 'success' | 'e
   const [showGit, setShowGit] = useState(false)
   const [showZip, setShowZip] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [repoBusy, setRepoBusy] = useState<string | null>(null)
 
   // Git form
   const [gitName, setGitName] = useState('')
@@ -158,30 +159,43 @@ export function Addons({ notify }: { notify: (msg: string, type?: 'success' | 'e
               <div className="flex items-center gap-2">
                 {repo.sourceType === 'git' && (
                   <button
+                    disabled={!!repoBusy}
                     onClick={async () => {
+                      setRepoBusy(`pull:${repo.id}`)
                       try {
                         const r = await api.pullAddon(repo.id)
                         notify(`Pulled "${r.name}" (${r.modules.length} modules)`)
                         load()
                       } catch (err) {
                         notify(err instanceof Error ? err.message : 'Git pull failed', 'error')
+                      } finally {
+                        setRepoBusy(null)
                       }
                     }}
-                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
                   >
-                    <RefreshCw className="h-3.5 w-3.5" /> Git Pull
+                    {repoBusy === `pull:${repo.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    {repoBusy === `pull:${repo.id}` ? 'Pulling...' : 'Git Pull'}
                   </button>
                 )}
                 <button
+                  disabled={!!repoBusy}
                   onClick={async () => {
                     if (!confirm(`Delete addon repo "${repo.name}"?`)) return
-                    await api.deleteAddon(repo.id)
-                    notify(`Deleted "${repo.name}"`)
-                    load()
+                    setRepoBusy(`del:${repo.id}`)
+                    try {
+                      await api.deleteAddon(repo.id)
+                      notify(`Deleted "${repo.name}"`)
+                      load()
+                    } catch (err) {
+                      notify(err instanceof Error ? err.message : 'Delete failed', 'error')
+                    } finally {
+                      setRepoBusy(null)
+                    }
                   }}
-                  className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 cursor-pointer"
+                  className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 disabled:opacity-50 cursor-pointer"
                 >
-                  <Trash2 className="h-4 w-4" />
+                  {repoBusy === `del:${repo.id}` ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                 </button>
               </div>
             </div>

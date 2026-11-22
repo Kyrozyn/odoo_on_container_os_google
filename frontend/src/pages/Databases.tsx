@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Copy, Database, Download, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { Copy, Database, Download, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
 import type { DatabaseInfo, OdooInstance } from '../types'
 import { Modal } from '../components/UI'
@@ -13,6 +13,7 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
   const [dbName, setDbName] = useState('')
   const [dupTarget, setDupTarget] = useState<{ instId: string; src: string } | null>(null)
   const [dupNewName, setDupNewName] = useState('')
+  const [busyKey, setBusyKey] = useState<string | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -34,6 +35,7 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
+    setBusyKey('create')
     try {
       await api.createDatabase(selectedInst, dbName.trim())
       notify(`Database "${dbName.trim()}" created!`)
@@ -42,12 +44,15 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
       load()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed creating DB', 'error')
+    } finally {
+      setBusyKey(null)
     }
   }
 
   const handleDuplicate = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!dupTarget) return
+    setBusyKey('duplicate')
     try {
       await api.duplicateDatabase(dupTarget.instId, dupTarget.src, dupNewName.trim())
       notify(`Duplicated "${dupTarget.src}" -> "${dupNewName.trim()}"!`)
@@ -56,6 +61,8 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
       load()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Duplicate failed', 'error')
+    } finally {
+      setBusyKey(null)
     }
   }
 
@@ -109,37 +116,52 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
                     {db.instanceId && (
                       <>
                         <button
+                          disabled={!!busyKey}
                           onClick={async () => {
+                            setBusyKey(`backup:${db.name}`)
                             try {
                               await api.createBackup(db.instanceId!, db.name)
                               notify(`Backup created for ${db.name}! Check Backups page.`)
                             } catch (err) {
                               notify(err instanceof Error ? err.message : 'Backup failed', 'error')
+                            } finally {
+                              setBusyKey(null)
                             }
                           }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
                         >
-                          <Download className="h-3 w-3" /> Backup
+                          {busyKey === `backup:${db.name}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
+                          {busyKey === `backup:${db.name}` ? 'Backing up...' : 'Backup'}
                         </button>
                         <button
+                          disabled={!!busyKey}
                           onClick={() => {
                             setDupTarget({ instId: db.instanceId!, src: db.name })
                             setDupNewName(`${db.name}_copy`)
                           }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
                         >
                           <Copy className="h-3 w-3" /> Duplicate
                         </button>
                         <button
+                          disabled={!!busyKey}
                           onClick={async () => {
                             if (!confirm(`Drop database "${db.name}" permanently?`)) return
-                            await api.dropDatabase(db.instanceId!, db.name)
-                            notify(`Dropped ${db.name}`)
-                            load()
+                            setBusyKey(`drop:${db.name}`)
+                            try {
+                              await api.dropDatabase(db.instanceId!, db.name)
+                              notify(`Dropped ${db.name}`)
+                              load()
+                            } catch (err) {
+                              notify(err instanceof Error ? err.message : 'Drop failed', 'error')
+                            } finally {
+                              setBusyKey(null)
+                            }
                           }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 cursor-pointer"
+                          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 cursor-pointer"
                         >
-                          <Trash2 className="h-3 w-3" /> Drop
+                          {busyKey === `drop:${db.name}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                          {busyKey === `drop:${db.name}` ? 'Dropping...' : 'Drop'}
                         </button>
                       </>
                     )}

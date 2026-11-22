@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { ExternalLink, Play, Plus, RefreshCw, RotateCw, Square, Trash2 } from 'lucide-react'
+import { ExternalLink, Loader2, Play, Plus, RefreshCw, RotateCw, Square, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
 import type { AddonModule, AddonRepo, DBMode, OdooInstance, OdooVersion, OdooVersionInfo } from '../types'
 import { Modal, StatusBadge } from '../components/UI'
@@ -18,6 +18,7 @@ export function Instances({
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [cardBusy, setCardBusy] = useState<Record<string, string>>({})
 
   // Create form state
   const [name, setName] = useState('')
@@ -94,14 +95,21 @@ export function Instances({
 
   const doAction = async (e: React.MouseEvent, id: string, action: 'start' | 'stop' | 'restart') => {
     e.stopPropagation()
+    setCardBusy((prev) => ({ ...prev, [id]: action }))
     try {
       if (action === 'start') await api.startInstance(id)
       if (action === 'stop') await api.stopInstance(id)
       if (action === 'restart') await api.restartInstance(id)
-      notify(`Instance ${action} command sent`)
+      notify(`Instance ${action} completed`)
       load()
     } catch (err) {
       notify(err instanceof Error ? err.message : `Failed to ${action}`, 'error')
+    } finally {
+      setCardBusy((prev) => {
+        const next = { ...prev }
+        delete next[id]
+        return next
+      })
     }
   }
 
@@ -109,12 +117,19 @@ export function Instances({
     e.stopPropagation()
     if (!confirm(`Delete Odoo instance "${inst.name}"?`)) return
     const deleteData = confirm('Also delete persistent data & filestore from disk?')
+    setCardBusy((prev) => ({ ...prev, [inst.id]: 'delete' }))
     try {
       await api.deleteInstance(inst.id, deleteData)
       notify(`Instance "${inst.name}" deleted`)
       load()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Delete failed', 'error')
+    } finally {
+      setCardBusy((prev) => {
+        const next = { ...prev }
+        delete next[inst.id]
+        return next
+      })
     }
   }
 
@@ -201,35 +216,51 @@ export function Instances({
 
             <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-3">
               <div className="flex items-center gap-1">
-                {inst.status !== 'running' ? (
-                  <button
-                    title="Start"
-                    onClick={(e) => doAction(e, inst.id, 'start')}
-                    className="rounded-lg p-1.5 text-emerald-600 hover:bg-emerald-50 cursor-pointer"
-                  >
-                    <Play className="h-4 w-4" />
-                  </button>
+                {cardBusy[inst.id] ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[#714B67] px-1.5 py-1">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    {cardBusy[inst.id] === 'stop'
+                      ? 'Stopping...'
+                      : cardBusy[inst.id] === 'start'
+                      ? 'Starting...'
+                      : cardBusy[inst.id] === 'restart'
+                      ? 'Restarting...'
+                      : 'Deleting...'}
+                  </span>
                 ) : (
-                  <button
-                    title="Stop"
-                    onClick={(e) => doAction(e, inst.id, 'stop')}
-                    className="rounded-lg p-1.5 text-amber-600 hover:bg-amber-50 cursor-pointer"
-                  >
-                    <Square className="h-4 w-4" />
-                  </button>
+                  <>
+                    {inst.status !== 'running' ? (
+                      <button
+                        title="Start"
+                        onClick={(e) => doAction(e, inst.id, 'start')}
+                        className="rounded-lg p-1.5 text-emerald-600 hover:bg-emerald-50 cursor-pointer"
+                      >
+                        <Play className="h-4 w-4" />
+                      </button>
+                    ) : (
+                      <button
+                        title="Stop"
+                        onClick={(e) => doAction(e, inst.id, 'stop')}
+                        className="rounded-lg p-1.5 text-amber-600 hover:bg-amber-50 cursor-pointer"
+                      >
+                        <Square className="h-4 w-4" />
+                      </button>
+                    )}
+                    <button
+                      title="Restart"
+                      onClick={(e) => doAction(e, inst.id, 'restart')}
+                      className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer"
+                    >
+                      <RotateCw className="h-4 w-4" />
+                    </button>
+                  </>
                 )}
-                <button
-                  title="Restart"
-                  onClick={(e) => doAction(e, inst.id, 'restart')}
-                  className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer"
-                >
-                  <RotateCw className="h-4 w-4" />
-                </button>
               </div>
               <button
                 title="Delete"
+                disabled={!!cardBusy[inst.id]}
                 onClick={(e) => handleDelete(e, inst)}
-                className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 cursor-pointer"
+                className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 disabled:opacity-40 cursor-pointer"
               >
                 <Trash2 className="h-4 w-4" />
               </button>
