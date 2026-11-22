@@ -299,9 +299,15 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 				}
 				if req.AddonRepoIDs != nil {
 					inst.AddonRepoIDs = req.AddonRepoIDs
+					if inst.ConfOptions != nil {
+						delete(inst.ConfOptions, "addons_path")
+					}
 				}
 				if req.RecommendedAddons != nil {
 					inst.RecommendedAddons = req.RecommendedAddons
+					if inst.ConfOptions != nil {
+						delete(inst.ConfOptions, "addons_path")
+					}
 				}
 				if req.EnvVars != nil {
 					inst.EnvVars = req.EnvVars
@@ -309,8 +315,17 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 				if req.ResetConfOptions {
 					inst.ConfOptions = map[string]string{}
 				} else if req.ConfOptions != nil {
-					inst.ConfOptions = req.ConfOptions
-					if pw, ok := req.ConfOptions["admin_passwd"]; ok && strings.TrimSpace(pw) != "" {
+					// Avoid pinning addons_path as a static override if it matches the auto-computed value
+					autoAddonsPath, _ := m.addons.ComputeAddonsPath(inst.AddonRepoIDs, inst.RecommendedAddons)
+					cleaned := make(map[string]string, len(req.ConfOptions))
+					for k, v := range req.ConfOptions {
+						if k == "addons_path" && strings.TrimSpace(v) == autoAddonsPath {
+							continue
+						}
+						cleaned[k] = v
+					}
+					inst.ConfOptions = cleaned
+					if pw, ok := cleaned["admin_passwd"]; ok && strings.TrimSpace(pw) != "" {
 						inst.AdminPassword = strings.TrimSpace(pw)
 					}
 				}
