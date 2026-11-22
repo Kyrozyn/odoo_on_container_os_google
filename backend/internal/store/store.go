@@ -139,16 +139,23 @@ func (s *Store) initDefault(defaultPassword, sharedPGContainer string) error {
 	return s.saveLocked()
 }
 
-// Get returns a deep copy of the current state for safe reading.
+// Get returns a deep copy of the current state for safe reading, always with non-nil slices.
 func (s *Store) Get() models.State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	cp := s.state
-	cp.Instances = append([]models.OdooInstance(nil), s.state.Instances...)
-	cp.AddonRepos = append([]models.AddonRepo(nil), s.state.AddonRepos...)
-	cp.Backups = append([]models.BackupRecord(nil), s.state.Backups...)
-	cp.BackupSchedules = append([]models.BackupSchedule(nil), s.state.BackupSchedules...)
+	cp.Instances = make([]models.OdooInstance, len(s.state.Instances))
+	copy(cp.Instances, s.state.Instances)
+
+	cp.AddonRepos = make([]models.AddonRepo, len(s.state.AddonRepos))
+	copy(cp.AddonRepos, s.state.AddonRepos)
+
+	cp.Backups = make([]models.BackupRecord, len(s.state.Backups))
+	copy(cp.Backups, s.state.Backups)
+
+	cp.BackupSchedules = make([]models.BackupSchedule, len(s.state.BackupSchedules))
+	copy(cp.BackupSchedules, s.state.BackupSchedules)
 	return cp
 }
 

@@ -21,6 +21,36 @@ import { Backups } from './pages/Backups'
 import { Containers } from './pages/Containers'
 import { Settings } from './pages/Settings'
 
+class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; message: string }
+> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props)
+    this.state = { hasError: false, message: '' }
+  }
+  static getDerivedStateFromError(err: Error) {
+    return { hasError: true, message: err?.message || 'Unexpected render error' }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-6 text-rose-800 space-y-3">
+          <h2 className="text-base font-bold">Terjadi kesalahan saat merender halaman</h2>
+          <p className="font-mono text-xs">{this.state.message}</p>
+          <button
+            onClick={() => this.setState({ hasError: false, message: '' })}
+            className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white cursor-pointer"
+          >
+            Coba Lagi
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(!!getToken())
   const [page, setPage] = useState<string>('dashboard')
@@ -115,26 +145,28 @@ export default function App() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto p-6 lg:p-8">
-        {page === 'dashboard' && (
-          <Dashboard
-            onNavigate={(p) => setPage(p)}
-            onSelectInstance={openInstance}
-            notify={notify}
-          />
-        )}
-        {page === 'instances' && <Instances onSelectInstance={openInstance} notify={notify} />}
-        {page === 'instance-detail' && selectedInstanceId && (
-          <InstanceDetail
-            instanceId={selectedInstanceId}
-            onBack={() => setPage('instances')}
-            notify={notify}
-          />
-        )}
-        {page === 'databases' && <Databases notify={notify} />}
-        {page === 'addons' && <Addons notify={notify} />}
-        {page === 'backups' && <Backups notify={notify} />}
-        {page === 'containers' && <Containers notify={notify} />}
-        {page === 'settings' && <Settings notify={notify} />}
+        <ErrorBoundary key={page + (selectedInstanceId || '')}>
+          {page === 'dashboard' && (
+            <Dashboard
+              onNavigate={(p) => setPage(p)}
+              onSelectInstance={openInstance}
+              notify={notify}
+            />
+          )}
+          {page === 'instances' && <Instances onSelectInstance={openInstance} notify={notify} />}
+          {page === 'instance-detail' && selectedInstanceId && (
+            <InstanceDetail
+              instanceId={selectedInstanceId}
+              onBack={() => setPage('instances')}
+              notify={notify}
+            />
+          )}
+          {page === 'databases' && <Databases notify={notify} />}
+          {page === 'addons' && <Addons notify={notify} />}
+          {page === 'backups' && <Backups notify={notify} />}
+          {page === 'containers' && <Containers notify={notify} />}
+          {page === 'settings' && <Settings notify={notify} />}
+        </ErrorBoundary>
       </main>
 
       {/* Toast Notification */}

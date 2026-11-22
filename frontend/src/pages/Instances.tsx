@@ -42,10 +42,10 @@ export function Instances({
         api.listAddons(),
         api.listRecommendedAddons(),
       ])
-      setInstances(insts)
-      setVersions(vers)
-      setAddons(ads)
-      setRecommendedAddons(recs)
+      setInstances(Array.isArray(insts) ? insts : [])
+      setVersions(Array.isArray(vers) ? vers : [])
+      setAddons(Array.isArray(ads) ? ads : [])
+      setRecommendedAddons(Array.isArray(recs) ? recs : [])
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading instances', 'error')
     } finally {

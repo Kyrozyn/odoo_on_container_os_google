@@ -26,8 +26,8 @@ export function Addons({ notify }: { notify: (msg: string, type?: 'success' | 'e
     setLoading(true)
     try {
       const [r, rec] = await Promise.all([api.listAddons(), api.listRecommendedAddons()])
-      setRepos(r)
-      setRecommended(rec)
+      setRepos(Array.isArray(r) ? r : [])
+      setRecommended(Array.isArray(rec) ? rec : [])
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading addons', 'error')
     } finally {

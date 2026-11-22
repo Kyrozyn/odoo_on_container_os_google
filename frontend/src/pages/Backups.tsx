@@ -29,10 +29,11 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
         api.listSchedules(),
         api.listInstances(),
       ])
-      setBackups(b)
-      setSchedules(sc)
-      setInstances(insts)
-      if (insts.length > 0 && !instId) setInstId(insts[0].id)
+      const safeInsts = Array.isArray(insts) ? insts : []
+      setBackups(Array.isArray(b) ? b : [])
+      setSchedules(Array.isArray(sc) ? sc : [])
+      setInstances(safeInsts)
+      if (safeInsts.length > 0 && !instId) setInstId(safeInsts[0].id)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading backups', 'error')
     }

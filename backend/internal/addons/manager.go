@@ -308,7 +308,7 @@ func (m *Manager) ComputeAddonsPath(repoIDs []string, recommendedSelected []stri
 
 // ScanModules walks a directory and extracts metadata from every __manifest__.py found.
 func ScanModules(rootDir string) []models.AddonModule {
-	var modules []models.AddonModule
+	modules := []models.AddonModule{}
 	_ = filepath.WalkDir(rootDir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
