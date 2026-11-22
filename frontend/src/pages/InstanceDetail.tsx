@@ -155,24 +155,30 @@ export function InstanceDetail({
     const clean = newDomain.trim().toLowerCase()
     if (!clean) return
     const nextDomains: DomainConfig[] = [...(inst.domains || []), { domain: clean, hasSsl: false, forceHttps: false }]
+    setBusyAction('add-domain')
     try {
       await api.updateInstance(inst.id, { domains: nextDomains, redeploy: false })
       setNewDomain('')
       notify(`Domain ${clean} attached and Nginx synced`)
-      loadInstance()
+      await loadInstance()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed adding domain', 'error')
+    } finally {
+      setBusyAction(null)
     }
   }
 
   const handleRemoveDomain = async (domain: string) => {
     const nextDomains = (inst.domains || []).filter((d) => d.domain !== domain)
+    setBusyAction(`rm-domain:${domain}`)
     try {
       await api.updateInstance(inst.id, { domains: nextDomains, redeploy: false })
       notify(`Domain ${domain} removed`)
-      loadInstance()
+      await loadInstance()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed removing domain', 'error')
+    } finally {
+      setBusyAction(null)
     }
   }
 
@@ -500,15 +506,22 @@ export function InstanceDetail({
             <input
               type="text"
               value={newDomain}
+              disabled={busy}
               onChange={(e) => setNewDomain(e.target.value)}
               placeholder="erp.clientdomain.com"
-              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+              className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50"
             />
             <button
               type="submit"
-              className="inline-flex items-center gap-1 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-medium text-white hover:bg-[#5c3c54] cursor-pointer"
+              disabled={busy || !newDomain.trim()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-medium text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
             >
-              <Plus className="h-4 w-4" /> Connect Domain
+              {busyAction === 'add-domain' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="h-4 w-4" />
+              )}
+              {busyAction === 'add-domain' ? 'Connecting & Syncing Nginx...' : 'Connect Domain'}
             </button>
           </form>
 
@@ -543,10 +556,15 @@ export function InstanceDetail({
                       {busyAction === `ssl:${d.domain}` ? 'Issuing SSL...' : d.hasSsl ? 'Renew SSL' : 'Enable HTTPS (Certbot)'}
                     </button>
                     <button
+                      disabled={busy}
                       onClick={() => handleRemoveDomain(d.domain)}
-                      className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 cursor-pointer"
+                      className="rounded-lg p-1.5 text-rose-500 hover:bg-rose-50 disabled:opacity-50 cursor-pointer"
                     >
-                      <Trash2 className="h-4 w-4" />
+                      {busyAction === `rm-domain:${d.domain}` ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
                     </button>
                   </div>
                 </div>
