@@ -320,7 +320,13 @@ server {
 }
 
 func (m *Manager) renderOdooVhost(containerName string, d models.DomainConfig) string {
-	useSSL := d.HasSSL && m.CertExists(d.Domain)
+	domain := strings.TrimSpace(strings.ToLower(d.Domain))
+	domain = strings.TrimPrefix(domain, "https://")
+	domain = strings.TrimPrefix(domain, "http://")
+	if idx := strings.IndexByte(domain, '/'); idx != -1 {
+		domain = domain[:idx]
+	}
+	useSSL := d.HasSSL && m.CertExists(domain)
 
 	odooLocations := fmt.Sprintf(`    resolver 127.0.0.11 valid=10s ipv6=off;
     set $odoo_http http://%s:8069;
@@ -373,7 +379,7 @@ func (m *Manager) renderOdooVhost(containerName string, d models.DomainConfig) s
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
     }
-`, d.Domain))
+`, domain))
 
 	if useSSL && d.ForceHTTPS {
 		sb.WriteString(`
@@ -397,7 +403,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/%s/privkey.pem;
 
 %s}
-`, d.Domain, d.Domain, d.Domain, odooLocations))
+`, domain, domain, domain, odooLocations))
 	}
 	return sb.String()
 }

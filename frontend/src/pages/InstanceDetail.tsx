@@ -152,7 +152,11 @@ export function InstanceDetail({
 
   const handleAddDomain = async (e: React.FormEvent) => {
     e.preventDefault()
-    const clean = newDomain.trim().toLowerCase()
+    const clean = newDomain
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/.*$/, '')
     if (!clean) return
     const nextDomains: DomainConfig[] = [...(inst.domains || []), { domain: clean, hasSsl: false, forceHttps: false }]
     setBusyAction('add-domain')
@@ -322,16 +326,22 @@ export function InstanceDetail({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {inst.primaryUrl && (
-            <a
-              href={inst.primaryUrl.startsWith(':') ? `http://${window.location.hostname}${inst.primaryUrl}` : inst.primaryUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
-            >
-              Open Odoo <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          )}
+          {inst.primaryUrl && (() => {
+            const targetUrl = inst.primaryUrl.startsWith(':')
+              ? `http://${window.location.hostname}${inst.primaryUrl}`
+              : inst.primaryUrl.replace(/^https?:\/\/(https?:\/\/)/, '$1')
+            return (
+              <a
+                href={targetUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={targetUrl}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
+              >
+                Open Odoo <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            )
+          })()}
           <button
             disabled={busy}
             onClick={() => runAction(inst.status === 'running' ? 'stop' : 'start')}

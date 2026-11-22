@@ -143,7 +143,7 @@ func (m *Manager) CreateInstance(ctx context.Context, req CreateInstanceRequest)
 	}
 
 	var domains []models.DomainConfig
-	if d := strings.TrimSpace(strings.ToLower(req.CustomDomain)); d != "" {
+	if d := normalizeDomain(req.CustomDomain); d != "" {
 		domains = append(domains, models.DomainConfig{Domain: d})
 	}
 
@@ -282,7 +282,14 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 					inst.UseRootSubdomain = *req.UseRootSubdomain
 				}
 				if req.Domains != nil {
-					inst.Domains = req.Domains
+					cleaned := make([]models.DomainConfig, 0, len(req.Domains))
+					for _, d := range req.Domains {
+						if host := normalizeDomain(d.Domain); host != "" {
+							d.Domain = host
+							cleaned = append(cleaned, d)
+						}
+					}
+					inst.Domains = cleaned
 				}
 				if req.AdminPassword != nil && *req.AdminPassword != "" {
 					inst.AdminPassword = *req.AdminPassword
@@ -451,22 +458,32 @@ func (m *Manager) enrichStatus(ctx context.Context, inst models.OdooInstance, se
 	}
 
 	// Determine primary clickable URL
-	if len(inst.Domains) > 0 && inst.Domains[0].Domain != "" {
+	if len(inst.Domains) > 0 && normalizeDomain(inst.Domains[0].Domain) != "" {
 		scheme := "http"
 		if inst.Domains[0].HasSSL {
 			scheme = "https"
 		}
-		res.PrimaryURL = fmt.Sprintf("%s://%s", scheme, inst.Domains[0].Domain)
-	} else if inst.UseRootSubdomain && settings.RootDomain != "" {
+		res.PrimaryURL = fmt.Sprintf("%s://%s", scheme, normalizeDomain(inst.Domains[0].Domain))
+	} else if inst.UseRootSubdomain && normalizeDomain(settings.RootDomain) != "" {
 		scheme := "http"
 		if inst.RootSubdomainSSL {
 			scheme = "https"
 		}
-		res.PrimaryURL = fmt.Sprintf("%s://%s.%s", scheme, inst.Name, settings.RootDomain)
+		res.PrimaryURL = fmt.Sprintf("%s://%s.%s", scheme, inst.Name, normalizeDomain(settings.RootDomain))
 	} else if inst.ExposePort {
 		res.PrimaryURL = fmt.Sprintf(":%d", inst.HTTPPort)
 	}
 	return res
+}
+
+func normalizeDomain(raw string) string {
+	d := strings.TrimSpace(strings.ToLower(raw))
+	d = strings.TrimPrefix(d, "https://")
+	d = strings.TrimPrefix(d, "http://")
+	if idx := strings.IndexByte(d, '/'); idx != -1 {
+		d = d[:idx]
+	}
+	return strings.TrimSpace(d)
 }
 
 func (m *Manager) writeInstanceFiles(inst models.OdooInstance) error {
