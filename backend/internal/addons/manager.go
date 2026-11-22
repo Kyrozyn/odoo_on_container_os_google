@@ -205,14 +205,16 @@ func (m *Manager) RescanRepo(id string) (*models.AddonRepo, error) {
 	return &updated, nil
 }
 
-// DeleteRepo removes an addon repository from disk and state.
+// DeleteRepo removes an addon repository from disk and state, blocking deletion if still attached to any Odoo instance.
 func (m *Manager) DeleteRepo(id string) error {
 	var localPath string
 	err := m.store.Update(func(st *models.State) error {
 		idx := -1
+		var repoName string
 		for i, r := range st.AddonRepos {
 			if r.ID == id {
 				idx = i
+				repoName = r.Name
 				localPath = r.LocalPath
 				break
 			}
@@ -220,17 +222,22 @@ func (m *Manager) DeleteRepo(id string) error {
 		if idx == -1 {
 			return fmt.Errorf("addon repository not found")
 		}
-		st.AddonRepos = append(st.AddonRepos[:idx], st.AddonRepos[idx+1:]...)
-		// Detach from any instances referencing this repo
-		for i := range st.Instances {
-			filtered := make([]string, 0, len(st.Instances[i].AddonRepoIDs))
-			for _, rid := range st.Instances[i].AddonRepoIDs {
-				if rid != id {
-					filtered = append(filtered, rid)
+
+		// Block deletion if attached to any Odoo instance
+		var attachedTo []string
+		for _, inst := range st.Instances {
+			for _, rid := range inst.AddonRepoIDs {
+				if rid == id {
+					attachedTo = append(attachedTo, inst.Name)
+					break
 				}
 			}
-			st.Instances[i].AddonRepoIDs = filtered
 		}
+		if len(attachedTo) > 0 {
+			return fmt.Errorf("tidak bisa menghapus addon '%s' karena masih ter-attach ke instance Odoo: [%s] — silakan detach terlebih dahulu di halaman detail instance", repoName, strings.Join(attachedTo, ", "))
+		}
+
+		st.AddonRepos = append(st.AddonRepos[:idx], st.AddonRepos[idx+1:]...)
 		return nil
 	})
 	if err != nil {
