@@ -268,9 +268,24 @@ export function InstanceDetail({
     }
   }
 
-  const copyText = (txt: string, label: string) => {
-    navigator.clipboard.writeText(txt)
-    notify(`${label} copied`)
+  const copyText = async (txt: string, label: string) => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(txt)
+      } else {
+        const el = document.createElement('textarea')
+        el.value = txt
+        el.style.position = 'fixed'
+        el.style.opacity = '0'
+        document.body.appendChild(el)
+        el.select()
+        document.execCommand('copy')
+        document.body.removeChild(el)
+      }
+      notify(`${label} copied`)
+    } catch {
+      notify(`Failed to copy ${label}`, 'error')
+    }
   }
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
