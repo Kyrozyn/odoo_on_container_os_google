@@ -57,6 +57,7 @@ func (m *Manager) CloneGitRepo(ctx context.Context, name, gitURL, branch, token 
 		_ = os.RemoveAll(destDir)
 		return nil, fmt.Errorf("git clone failed: %s", strings.TrimSpace(string(out)))
 	}
+	ensureWorldReadable(destDir)
 
 	modules := ScanModules(destDir)
 	now := time.Now()
@@ -103,6 +104,7 @@ func (m *Manager) PullGitRepo(ctx context.Context, id string) (*models.AddonRepo
 	if err != nil {
 		return nil, fmt.Errorf("git pull failed: %s", strings.TrimSpace(string(out)))
 	}
+	ensureWorldReadable(target.LocalPath)
 
 	modules := ScanModules(target.LocalPath)
 	now := time.Now()
@@ -134,14 +136,33 @@ func (m *Manager) UploadZip(name string, zipPath string) (*models.AddonRepo, err
 	if _, err := os.Stat(destDir); err == nil {
 		return nil, fmt.Errorf("addon repository '%s' already exists", cleanName)
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+
+	tmpDir, err := os.MkdirTemp("", "runodoo-zip-extract-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := extractZipSafe(zipPath, tmpDir); err != nil {
 		return nil, err
 	}
 
-	if err := extractZipSafe(zipPath, destDir); err != nil {
+	// If __manifest__.py is directly at the root of the zip (user zipped module contents instead of folder),
+	// wrap it inside a valid Python module folder name (underscores, no hyphens) so Odoo can import it!
+	targetRoot := destDir
+	if _, err := os.Stat(filepath.Join(tmpDir, "__manifest__.py")); err == nil {
+		pyModName := sanitizePythonModuleName(cleanName)
+		targetRoot = filepath.Join(destDir, pyModName)
+	}
+
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		return nil, err
+	}
+	if err := copyDirReadable(tmpDir, targetRoot); err != nil {
 		_ = os.RemoveAll(destDir)
 		return nil, err
 	}
+	ensureWorldReadable(destDir)
 
 	modules := ScanModules(destDir)
 	now := time.Now()
@@ -404,7 +425,7 @@ func extractZipSafe(zipPath, destDir string) error {
 		if err != nil {
 			return err
 		}
-		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
 			rc.Close()
 			return err
@@ -417,6 +438,49 @@ func extractZipSafe(zipPath, destDir string) error {
 		}
 	}
 	return nil
+}
+
+func sanitizePythonModuleName(s string) string {
+	s = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "-", "_")
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		s = "mod_" + s
+	}
+	return s
+}
+
+func ensureWorldReadable(root string) {
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			_ = os.Chmod(p, 0o755)
+		} else {
+			_ = os.Chmod(p, 0o644)
+		}
+		return nil
+	})
+}
+
+func copyDirReadable(src, dst string) error {
+	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0o644)
+	})
 }
 
 func sanitizeName(s string) string {

@@ -1,6 +1,7 @@
 package addons
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -76,5 +77,52 @@ func TestRecommendedAddonsSelectiveMount(t *testing.T) {
 	}
 	if len(binds) != 1 || !strings.HasSuffix(binds[0], ":/mnt/recommended-addons/om_theme_lite:ro") {
 		t.Fatalf("expected single selective bind for om_theme_lite, got %+v", binds)
+	}
+}
+
+func TestUploadZipRootManifestWrapsInValidPythonModule(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "sample.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	w, _ := zw.Create("__manifest__.py")
+	_, _ = w.Write([]byte("{'name': 'Custom Zip Mod', 'version': '18.0.1.0'}"))
+	w2, _ := zw.Create("__init__.py")
+	_, _ = w2.Write([]byte(""))
+	zw.Close()
+	zf.Close()
+
+	cfg := &config.Config{
+		DataDir:                  dir,
+		HostDataDir:              dir,
+		RecommendedAddonsDir:     filepath.Join(dir, "recommended-addons"),
+		HostRecommendedAddonsDir: filepath.Join(dir, "recommended-addons"),
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.New(filepath.Join(dir, "state.json"), "pass123", "pg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(cfg, st)
+
+	repo, err := mgr.UploadZip("my-custom-mod", zipPath)
+	if err != nil {
+		t.Fatalf("UploadZip failed: %v", err)
+	}
+	if len(repo.Modules) != 1 || repo.Modules[0].TechnicalName != "my_custom_mod" {
+		t.Fatalf("expected wrapped python module name my_custom_mod, got %+v", repo.Modules)
+	}
+
+	addonsPath, binds := mgr.ComputeAddonsPath([]string{repo.ID}, nil)
+	if !strings.Contains(addonsPath, "/mnt/extra-addons/my-custom-mod") {
+		t.Fatalf("expected /mnt/extra-addons/my-custom-mod in addonsPath, got %s", addonsPath)
+	}
+	if len(binds) != 1 {
+		t.Fatalf("expected 1 bind, got %+v", binds)
 	}
 }
