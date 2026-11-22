@@ -99,7 +99,12 @@ $DOCKER_CMD run -d \
     -v "${DATA_DIR}:/var/runodoo" \
     "${IMAGE_NAME}"
 
-# 7. Open firewall ports if UFW is active (non-COS)
+# 7. Clean up dangling images and build cache to free disk space
+echo "Cleaning up unused Docker build cache & dangling images..."
+$DOCKER_CMD image prune -f >/dev/null 2>&1 || true
+$DOCKER_CMD builder prune -f >/dev/null 2>&1 || true
+
+# 8. Open firewall ports if UFW is active (non-COS)
 if command -v ufw >/dev/null 2>&1 && sudo ufw status | grep -q "Status: active"; then
     echo "Opening UFW ports 80, 443, and ${PANEL_PORT}..."
     sudo ufw allow 80/tcp >/dev/null 2>&1 || true
