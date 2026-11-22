@@ -1,0 +1,27 @@
+services:
+  runodoo:
+    build: .
+    image: runodoo:latest
+    container_name: runodoo
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - RUNODOO_PORT=3000
+      - RUNODOO_DATA_DIR=/var/runodoo
+      - RUNODOO_HOST_DATA_DIR=${RUNODOO_HOST_DATA_DIR:-/var/runodoo}
+      - RUNODOO_RECOMMENDED_ADDONS_DIR=/var/runodoo/recommended-addons
+      - RUNODOO_HOST_RECOMMENDED_ADDONS_DIR=${RUNODOO_HOST_RECOMMENDED_ADDONS_DIR:-${PWD}/addons}
+      - RUNODOO_DEFAULT_PASSWORD=${RUNODOO_DEFAULT_PASSWORD:-runodoo123}
+      - RUNODOO_NETWORK=runodoo-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${RUNODOO_HOST_DATA_DIR:-/var/runodoo}:/var/runodoo
+      - ./addons:/var/runodoo/recommended-addons:ro
+    networks:
+      - runodoo-net
+
+networks:
+  runodoo-net:
+    name: runodoo-net
+    driver: bridge

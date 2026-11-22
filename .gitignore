@@ -1,4 +1,9 @@
-addons/.DS_Store
-addons/om_access_manager-20/.DS_Store
+.DS_Store
 __pycache__/
 *.py[cod]
+*$py.class
+frontend/node_modules/
+frontend/dist/
+backend/runodoo
+data/
+*.zip
