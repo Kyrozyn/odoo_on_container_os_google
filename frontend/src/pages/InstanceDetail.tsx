@@ -326,17 +326,23 @@ export function InstanceDetail({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {inst.primaryUrl && (() => {
-            const targetUrl = inst.primaryUrl.startsWith(':')
-              ? `http://${window.location.hostname}${inst.primaryUrl}`
-              : inst.primaryUrl.replace(/^https?:\/\/(https?:\/\/)/, '$1')
+          {(() => {
+            const raw = inst.primaryUrl || (inst.exposePort && inst.httpPort ? `:${inst.httpPort}` : '')
+            if (!raw) return null
+            const targetUrl = raw.startsWith(':')
+              ? `http://${window.location.hostname}${raw}`
+              : raw.replace(/^(https?:\/\/)+/i, (m) => (m.toLowerCase().startsWith('https') ? 'https://' : 'http://'))
             return (
               <a
                 href={targetUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 title={targetUrl}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
+                onClick={(e) => {
+                  e.preventDefault()
+                  window.open(targetUrl, '_blank', 'noopener,noreferrer')
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-100 cursor-pointer"
               >
                 Open Odoo <ExternalLink className="h-3.5 w-3.5" />
               </a>
@@ -554,16 +560,24 @@ export function InstanceDetail({
             {(inst.domains || []).length === 0 ? (
               <div className="p-4 text-center text-xs text-slate-500">No custom domains connected yet.</div>
             ) : (
-              inst.domains.map((d) => (
+              inst.domains.map((d) => {
+                const cleanHost = d.domain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '')
+                const domainUrl = `${d.hasSsl ? 'https' : 'http'}://${cleanHost}`
+                return (
                 <div key={d.domain} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
                   <div>
                     <a
-                      href={`${d.hasSsl ? 'https' : 'http'}://${d.domain}`}
+                      href={domainUrl}
                       target="_blank"
-                      rel="noreferrer"
-                      className="font-medium text-indigo-600 hover:underline text-sm"
+                      rel="noopener noreferrer"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        window.open(domainUrl, '_blank', 'noopener,noreferrer')
+                      }}
+                      className="inline-flex items-center gap-1.5 font-medium text-indigo-600 hover:underline text-sm cursor-pointer"
                     >
-                      {d.hasSsl ? 'https://' : 'http://'}{d.domain}
+                      {domainUrl}
+                      <ExternalLink className="h-3.5 w-3.5" />
                     </a>
                     {d.hasSsl && (
                       <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
@@ -574,11 +588,11 @@ export function InstanceDetail({
                   <div className="flex items-center gap-2">
                     <button
                       disabled={busy}
-                      onClick={() => handleIssueSsl(d.domain)}
+                      onClick={() => handleIssueSsl(cleanHost)}
                       className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60 cursor-pointer"
                     >
-                      {busyAction === `ssl:${d.domain}` && <Loader2 className="h-3 w-3 animate-spin" />}
-                      {busyAction === `ssl:${d.domain}` ? 'Issuing SSL...' : d.hasSsl ? 'Renew SSL' : 'Enable HTTPS (Certbot)'}
+                      {busyAction === `ssl:${cleanHost}` && <Loader2 className="h-3 w-3 animate-spin" />}
+                      {busyAction === `ssl:${cleanHost}` ? 'Issuing SSL...' : d.hasSsl ? 'Renew SSL' : 'Enable HTTPS (Certbot)'}
                     </button>
                     <button
                       disabled={busy}
@@ -593,7 +607,8 @@ export function InstanceDetail({
                     </button>
                   </div>
                 </div>
-              ))
+                )
+              })
             )}
           </div>
         </div>

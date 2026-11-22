@@ -208,21 +208,30 @@ export function Instances({
                 )}
               </div>
 
-              {inst.primaryUrl && (
-                <div className="mt-3 text-xs text-slate-600 truncate">
-                  URL:{' '}
-                  <a
-                    href={inst.primaryUrl.startsWith(':') ? `http://${window.location.hostname}${inst.primaryUrl}` : inst.primaryUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="inline-flex items-center gap-1 font-medium text-indigo-600 hover:underline"
-                  >
-                    {inst.primaryUrl}
-                    <ExternalLink className="h-3 w-3" />
-                  </a>
-                </div>
-              )}
+              {inst.primaryUrl && (() => {
+                const targetUrl = inst.primaryUrl.startsWith(':')
+                  ? `http://${window.location.hostname}${inst.primaryUrl}`
+                  : inst.primaryUrl.replace(/^(https?:\/\/)+/i, (m) => (m.toLowerCase().startsWith('https') ? 'https://' : 'http://'))
+                return (
+                  <div className="mt-3 text-xs text-slate-600 truncate">
+                    URL:{' '}
+                    <a
+                      href={targetUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        e.preventDefault()
+                        window.open(targetUrl, '_blank', 'noopener,noreferrer')
+                      }}
+                      className="inline-flex items-center gap-1 font-medium text-indigo-600 hover:underline"
+                    >
+                      {targetUrl}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  </div>
+                )
+              })()}
             </div>
 
             <div className="mt-5 flex items-center justify-between border-t border-slate-100 pt-3">
