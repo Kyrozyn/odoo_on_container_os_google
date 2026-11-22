@@ -126,3 +126,40 @@ func TestUploadZipRootManifestWrapsInValidPythonModule(t *testing.T) {
 		t.Fatalf("expected 1 bind, got %+v", binds)
 	}
 }
+
+func TestUploadZipNormalizesGitHubBranchSuffix(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "sintaksa_branding-main.zip")
+	zf, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(zf)
+	w, _ := zw.Create("sintaksa_branding-main/__manifest__.py")
+	_, _ = w.Write([]byte("{'name': 'Sintaksa Branding', 'version': '20.0.1.0'}"))
+	zw.Close()
+	zf.Close()
+
+	cfg := &config.Config{
+		DataDir:                  dir,
+		HostDataDir:              dir,
+		RecommendedAddonsDir:     filepath.Join(dir, "recommended-addons"),
+		HostRecommendedAddonsDir: filepath.Join(dir, "recommended-addons"),
+	}
+	if err := cfg.EnsureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.New(filepath.Join(dir, "state.json"), "pass123", "pg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(cfg, st)
+
+	repo, err := mgr.UploadZip("branding", zipPath)
+	if err != nil {
+		t.Fatalf("UploadZip failed: %v", err)
+	}
+	if len(repo.Modules) != 1 || repo.Modules[0].TechnicalName != "sintaksa_branding" {
+		t.Fatalf("expected normalized module name sintaksa_branding, got %+v", repo.Modules)
+	}
+}

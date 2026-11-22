@@ -162,6 +162,7 @@ func (m *Manager) UploadZip(name string, zipPath string) (*models.AddonRepo, err
 		_ = os.RemoveAll(destDir)
 		return nil, err
 	}
+	normalizeModuleFolderNames(destDir)
 	ensureWorldReadable(destDir)
 
 	modules := ScanModules(destDir)
@@ -440,12 +441,68 @@ func extractZipSafe(zipPath, destDir string) error {
 	return nil
 }
 
-func sanitizePythonModuleName(s string) string {
-	s = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(s)), "-", "_")
-	if s == "" || (s[0] >= '0' && s[0] <= '9') {
-		s = "mod_" + s
+var (
+	reValidOdooModName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	reGitHubBranchSfx  = regexp.MustCompile(`(?i)-(main|master|dev|develop|staging|prod|production|v?\d+(\.\d+)*)$`)
+)
+
+// normalizeModuleFolderNames renames any extracted Odoo module directory whose name is not
+// a valid Python/Odoo identifier (e.g. GitHub ZIPs like "sintaksa_branding-main" -> "sintaksa_branding").
+func normalizeModuleFolderNames(rootDir string) {
+	var manifestDirs []string
+	_ = filepath.WalkDir(rootDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && (d.Name() == ".git" || d.Name() == "__pycache__") {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && d.Name() == "__manifest__.py" {
+			manifestDirs = append(manifestDirs, filepath.Dir(p))
+		}
+		return nil
+	})
+
+	for _, modDir := range manifestDirs {
+		// Never rename rootDir itself
+		if filepath.Clean(modDir) == filepath.Clean(rootDir) {
+			continue
+		}
+		base := filepath.Base(modDir)
+		if reValidOdooModName.MatchString(base) {
+			continue
+		}
+		cleaned := reGitHubBranchSfx.ReplaceAllString(base, "")
+		cleaned = sanitizePythonModuleName(cleaned)
+		if cleaned == "" || cleaned == base {
+			continue
+		}
+		newPath := filepath.Join(filepath.Dir(modDir), cleaned)
+		if _, err := os.Stat(newPath); err == nil {
+			continue
+		}
+		_ = os.Rename(modDir, newPath)
 	}
-	return s
+}
+
+func sanitizePythonModuleName(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	res := strings.Trim(b.String(), "_")
+	for strings.Contains(res, "__") {
+		res = strings.ReplaceAll(res, "__", "_")
+	}
+	if res == "" || (res[0] >= '0' && res[0] <= '9') {
+		res = "mod_" + res
+	}
+	return res
 }
 
 func ensureWorldReadable(root string) {
