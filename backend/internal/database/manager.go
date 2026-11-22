@@ -296,6 +296,61 @@ func (m *Manager) CreateOdooDatabase(ctx context.Context, inst models.OdooInstan
 	return fmt.Errorf("Odoo did not confirm database creation (check master password or container logs)")
 }
 
+// FindInstalledModules checks every database of an Odoo instance and returns a map of
+// dbName -> list of technical module names that are currently installed (or pending upgrade/removal).
+func (m *Manager) FindInstalledModules(ctx context.Context, inst models.OdooInstance, moduleNames []string) (map[string][]string, error) {
+	result := map[string][]string{}
+	if len(moduleNames) == 0 {
+		return result, nil
+	}
+
+	dbs, err := m.ListInstanceDatabases(ctx, inst)
+	if err != nil {
+		return result, err
+	}
+	if len(dbs) == 0 {
+		return result, nil
+	}
+
+	quoted := make([]string, 0, len(moduleNames))
+	for _, mod := range moduleNames {
+		mod = strings.TrimSpace(mod)
+		if mod != "" {
+			quoted = append(quoted, "'"+escapeSQL(mod)+"'")
+		}
+	}
+	if len(quoted) == 0 {
+		return result, nil
+	}
+
+	query := fmt.Sprintf(
+		`SELECT name FROM ir_module_module WHERE state IN ('installed', 'to upgrade', 'to remove') AND name IN (%s) ORDER BY name;`,
+		strings.Join(quoted, ","),
+	)
+
+	pgUser, pgPass := m.adminCredsForInstance(inst)
+	for _, db := range dbs {
+		out, code, execErr := m.docker.Exec(ctx, inst.DBContainerName, []string{
+			"psql", "-U", pgUser, "-d", db.Name, "-At", "-c", query,
+		}, []string{"PGPASSWORD=" + pgPass})
+		if execErr != nil || code != 0 {
+			// Skip databases that don't have ir_module_module (uninitialized DBs)
+			continue
+		}
+		var installed []string
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				installed = append(installed, line)
+			}
+		}
+		if len(installed) > 0 {
+			result[db.Name] = installed
+		}
+	}
+	return result, nil
+}
+
 // CreateDatabase creates a new empty PostgreSQL database owned by the instance's user (used for restore).
 func (m *Manager) CreateDatabase(ctx context.Context, inst models.OdooInstance, dbName string) error {
 	if !validDBName.MatchString(dbName) {

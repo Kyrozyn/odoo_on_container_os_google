@@ -481,7 +481,7 @@ func (s *Server) handleInstanceSSL(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateAppsList(w http.ResponseWriter, r *http.Request) {
-	updated, out, err := s.odoo.UpdateAppsList(r.Context(), r.PathValue("id"), nil)
+	updated, out, err := s.odoo.UpdateAppsList(r.Context(), r.PathValue("id"), nil, nil)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "output": out})
 		return

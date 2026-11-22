@@ -267,6 +267,23 @@ func (m *Manager) runInitialDeploy(inst models.OdooInstance) {
 
 // UpdateInstance modifies an instance's configuration and optionally redeploys its container.
 func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req UpdateInstanceRequest) (*models.OdooInstance, error) {
+	// Pre-flight check: detect removed addons and block if any of their modules are still installed in Odoo
+	var removedModules []string
+	if existing, ok := m.store.FindInstance(idOrName); ok {
+		removedModules = m.computeRemovedModules(existing, req.AddonRepoIDs, req.RecommendedAddons)
+		if len(removedModules) > 0 {
+			installedByDB, err := m.db.FindInstalledModules(ctx, existing, removedModules)
+			if err == nil && len(installedByDB) > 0 {
+				var parts []string
+				for dbName, mods := range installedByDB {
+					parts = append(parts, fmt.Sprintf("database '%s': [%s]", dbName, strings.Join(mods, ", ")))
+				}
+				sort.Strings(parts)
+				return nil, fmt.Errorf("tidak bisa detach addon karena modul masih ter-install di %s — silakan uninstall modul tersebut di Odoo terlebih dahulu", strings.Join(parts, "; "))
+			}
+		}
+	}
+
 	var updated models.OdooInstance
 	err := m.store.Update(func(s *models.State) error {
 		for i := range s.Instances {
@@ -362,9 +379,9 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 			m.tracker.Step(inst.ID, "Syncing Nginx reverse proxy...", 90)
 			_ = m.proxy.SyncAll(ctx)
 			if shouldUpdateApps {
-				m.tracker.Step(inst.ID, "Updating Odoo Apps List on all databases...", 95)
+				m.tracker.Step(inst.ID, "Updating Odoo Apps List & cleaning detached modules...", 95)
 				time.Sleep(3 * time.Second)
-				updatedDBs, _, err := m.UpdateAppsList(ctx, inst.ID, func(line string) {
+				updatedDBs, _, err := m.UpdateAppsList(ctx, inst.ID, removedModules, func(line string) {
 					m.tracker.Log(inst.ID, line)
 				})
 				if err != nil {
@@ -440,8 +457,8 @@ func (m *Manager) GetWithStatus(ctx context.Context, idOrName string) (*models.I
 }
 
 // UpdateAppsList runs Odoo's ir.module.module.update_list() on every database of an instance
-// so newly attached or removed addons immediately reflect in Odoo's Apps menu.
-func (m *Manager) UpdateAppsList(ctx context.Context, idOrName string, onLog func(string)) ([]string, string, error) {
+// and unlinks uninstalled modules that were detached from the instance.
+func (m *Manager) UpdateAppsList(ctx context.Context, idOrName string, removedModules []string, onLog func(string)) ([]string, string, error) {
 	inst, ok := m.store.FindInstance(idOrName)
 	if !ok {
 		return nil, "", fmt.Errorf("instance not found")
@@ -455,6 +472,15 @@ func (m *Manager) UpdateAppsList(ctx context.Context, idOrName string, onLog fun
 		return []string{}, "No databases found on this instance", nil
 	}
 
+	pyRemovedList := "[]"
+	if len(removedModules) > 0 {
+		quoted := make([]string, 0, len(removedModules))
+		for _, mod := range removedModules {
+			quoted = append(quoted, strconv.Quote(mod))
+		}
+		pyRemovedList = "[" + strings.Join(quoted, ", ") + "]"
+	}
+
 	var updated []string
 	var allOut strings.Builder
 	for _, db := range dbs {
@@ -463,9 +489,16 @@ func (m *Manager) UpdateAppsList(ctx context.Context, idOrName string, onLog fun
 		}
 		script := fmt.Sprintf(`odoo shell -c /etc/odoo/odoo.conf -d %q --no-http <<'PYEOF'
 added, updated_cnt = env['ir.module.module'].update_list()
+removed_names = %s
+unlinked_cnt = 0
+if removed_names:
+    stale = env['ir.module.module'].search([('name', 'in', removed_names), ('state', '=', 'uninstalled')])
+    unlinked_cnt = len(stale)
+    if stale:
+        stale.unlink()
 env.cr.commit()
-print(f"RUNODOO_UPDATE_LIST_OK added={added} updated={updated_cnt}")
-PYEOF`, db.Name)
+print(f"RUNODOO_UPDATE_LIST_OK added={added} updated={updated_cnt} unlinked={unlinked_cnt}")
+PYEOF`, db.Name, pyRemovedList)
 
 		out, code, execErr := m.docker.Exec(ctx, inst.ContainerName, []string{"sh", "-c", script}, nil)
 		allOut.WriteString(fmt.Sprintf("--- %s ---\n%s\n", db.Name, out))
@@ -477,7 +510,11 @@ PYEOF`, db.Name)
 		}
 		updated = append(updated, db.Name)
 		if onLog != nil {
-			onLog(fmt.Sprintf("✓ Apps List updated on '%s'", db.Name))
+			if len(removedModules) > 0 {
+				onLog(fmt.Sprintf("✓ Apps List updated & detached modules cleaned on '%s'", db.Name))
+			} else {
+				onLog(fmt.Sprintf("✓ Apps List updated on '%s'", db.Name))
+			}
 		}
 	}
 
@@ -485,6 +522,64 @@ PYEOF`, db.Name)
 		updated = []string{}
 	}
 	return updated, allOut.String(), nil
+}
+
+// computeRemovedModules returns technical module names belonging to addon repos or recommended addons
+// that are present in `existing` but removed in the incoming update request.
+func (m *Manager) computeRemovedModules(existing models.OdooInstance, nextRepoIDs []string, nextRecs []string) []string {
+	removedSet := map[string]bool{}
+	st := m.store.Get()
+
+	if nextRepoIDs != nil {
+		nextMap := make(map[string]bool, len(nextRepoIDs))
+		for _, id := range nextRepoIDs {
+			nextMap[id] = true
+		}
+		repoMap := make(map[string]models.AddonRepo, len(st.AddonRepos))
+		for _, r := range st.AddonRepos {
+			repoMap[r.ID] = r
+		}
+		for _, oldID := range existing.AddonRepoIDs {
+			if !nextMap[oldID] {
+				if repo, ok := repoMap[oldID]; ok {
+					for _, mod := range repo.Modules {
+						if mod.TechnicalName != "" {
+							removedSet[mod.TechnicalName] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if nextRecs != nil {
+		nextRecMap := make(map[string]bool, len(nextRecs))
+		for _, r := range nextRecs {
+			nextRecMap[r] = true
+		}
+		allRecs := m.addons.ListRecommendedAddons()
+		recByKey := map[string]string{}
+		for _, mod := range allRecs {
+			recByKey[mod.RelPath] = mod.TechnicalName
+			recByKey[mod.TechnicalName] = mod.TechnicalName
+		}
+		for _, oldRec := range existing.RecommendedAddons {
+			tech := recByKey[oldRec]
+			if tech == "" {
+				tech = filepath.Base(oldRec)
+			}
+			if !nextRecMap[oldRec] && !nextRecMap[tech] {
+				removedSet[tech] = true
+			}
+		}
+	}
+
+	out := make([]string, 0, len(removedSet))
+	for k := range removedSet {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // UpgradeModules runs `odoo -u <modules> --stop-after-init` inside the running Odoo container.
