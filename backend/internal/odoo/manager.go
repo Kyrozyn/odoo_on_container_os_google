@@ -335,6 +335,7 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 		return nil, err
 	}
 	if req.Redeploy {
+		shouldUpdateApps := req.AddonRepoIDs != nil || req.RecommendedAddons != nil
 		m.tracker.Start(updated.ID, fmt.Sprintf("Redeploying %s...", updated.Name))
 		go func(inst models.OdooInstance) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -343,8 +344,22 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 				m.tracker.Fail(inst.ID, err)
 				return
 			}
-			m.tracker.Step(inst.ID, "Syncing Nginx reverse proxy...", 95)
+			m.tracker.Step(inst.ID, "Syncing Nginx reverse proxy...", 90)
 			_ = m.proxy.SyncAll(ctx)
+			if shouldUpdateApps {
+				m.tracker.Step(inst.ID, "Updating Odoo Apps List on all databases...", 95)
+				time.Sleep(3 * time.Second)
+				updatedDBs, _, err := m.UpdateAppsList(ctx, inst.ID, func(line string) {
+					m.tracker.Log(inst.ID, line)
+				})
+				if err != nil {
+					m.tracker.Log(inst.ID, fmt.Sprintf("Warning updating Apps List: %v", err))
+				} else if len(updatedDBs) == 0 {
+					m.tracker.Log(inst.ID, "No initialized databases yet — Apps List will include new addons when a DB is created")
+				} else {
+					m.tracker.Log(inst.ID, fmt.Sprintf("Updated Apps List on %d database(s): %s", len(updatedDBs), strings.Join(updatedDBs, ", ")))
+				}
+			}
 			m.tracker.Complete(inst.ID)
 		}(updated)
 		return &updated, nil
@@ -407,6 +422,54 @@ func (m *Manager) GetWithStatus(ctx context.Context, idOrName string) (*models.I
 	st := m.store.Get()
 	res := m.enrichStatus(ctx, inst, st.Settings)
 	return &res, nil
+}
+
+// UpdateAppsList runs Odoo's ir.module.module.update_list() on every database of an instance
+// so newly attached or removed addons immediately reflect in Odoo's Apps menu.
+func (m *Manager) UpdateAppsList(ctx context.Context, idOrName string, onLog func(string)) ([]string, string, error) {
+	inst, ok := m.store.FindInstance(idOrName)
+	if !ok {
+		return nil, "", fmt.Errorf("instance not found")
+	}
+
+	dbs, err := m.db.ListInstanceDatabases(ctx, inst)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed listing databases: %w", err)
+	}
+	if len(dbs) == 0 {
+		return []string{}, "No databases found on this instance", nil
+	}
+
+	var updated []string
+	var allOut strings.Builder
+	for _, db := range dbs {
+		if onLog != nil {
+			onLog(fmt.Sprintf("Running update_list() on database '%s'...", db.Name))
+		}
+		script := fmt.Sprintf(`odoo shell -c /etc/odoo/odoo.conf -d %q --no-http <<'PYEOF'
+added, updated_cnt = env['ir.module.module'].update_list()
+env.cr.commit()
+print(f"RUNODOO_UPDATE_LIST_OK added={added} updated={updated_cnt}")
+PYEOF`, db.Name)
+
+		out, code, execErr := m.docker.Exec(ctx, inst.ContainerName, []string{"sh", "-c", script}, nil)
+		allOut.WriteString(fmt.Sprintf("--- %s ---\n%s\n", db.Name, out))
+		if execErr != nil || code != 0 {
+			if onLog != nil {
+				onLog(fmt.Sprintf("Skipped/failed on '%s' (exit %d): may not be an initialized Odoo DB", db.Name, code))
+			}
+			continue
+		}
+		updated = append(updated, db.Name)
+		if onLog != nil {
+			onLog(fmt.Sprintf("✓ Apps List updated on '%s'", db.Name))
+		}
+	}
+
+	if updated == nil {
+		updated = []string{}
+	}
+	return updated, allOut.String(), nil
 }
 
 // UpgradeModules runs `odoo -u <modules> --stop-after-init` inside the running Odoo container.

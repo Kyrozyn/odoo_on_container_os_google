@@ -107,6 +107,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ domain, email }),
     }),
+  updateAppsList: (id: string) =>
+    request<{ ok: boolean; updated: string[]; output: string }>(`/api/instances/${id}/update-apps-list`, {
+      method: 'POST',
+    }),
   upgradeModules: (id: string, dbName: string, modules: string[]) =>
     request<{ ok: boolean; output: string }>(`/api/instances/${id}/upgrade-modules`, {
       method: 'POST',

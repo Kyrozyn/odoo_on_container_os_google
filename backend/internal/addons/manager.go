@@ -265,7 +265,10 @@ func (m *Manager) ComputeAddonsPath(repoIDs []string, recommendedSelected []stri
 				parentDir := filepath.Dir(modDir)
 				rel, err := filepath.Rel(repo.LocalPath, parentDir)
 				if err == nil {
-					if rel == "." || rel == "" {
+					if rel == ".." {
+						// Single-module repo: __manifest__.py is directly inside repo root
+						pathsSet["/mnt/extra-addons"] = true
+					} else if rel == "." || rel == "" {
 						pathsSet[containerRepoRoot] = true
 					} else {
 						pathsSet[containerRepoRoot+"/"+filepath.ToSlash(rel)] = true

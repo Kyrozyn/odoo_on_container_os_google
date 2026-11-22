@@ -97,6 +97,7 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("GET /api/instances/{id}/stats", s.handleInstanceStats)
 	protected.HandleFunc("GET /api/instances/{id}/conf", s.handleInstanceConf)
 	protected.HandleFunc("POST /api/instances/{id}/ssl", s.handleInstanceSSL)
+	protected.HandleFunc("POST /api/instances/{id}/update-apps-list", s.handleUpdateAppsList)
 	protected.HandleFunc("POST /api/instances/{id}/upgrade-modules", s.handleUpgradeModules)
 
 	// Databases
@@ -477,6 +478,15 @@ func (s *Server) handleInstanceSSL(w http.ResponseWriter, r *http.Request) {
 	})
 	_ = s.proxy.SyncAll(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "logs": logs})
+}
+
+func (s *Server) handleUpdateAppsList(w http.ResponseWriter, r *http.Request) {
+	updated, out, err := s.odoo.UpdateAppsList(r.Context(), r.PathValue("id"), nil)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "output": out})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": updated, "output": out})
 }
 
 func (s *Server) handleUpgradeModules(w http.ResponseWriter, r *http.Request) {

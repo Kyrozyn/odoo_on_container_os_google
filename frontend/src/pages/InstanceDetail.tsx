@@ -836,10 +836,41 @@ export function InstanceDetail({
           )}
 
           <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
-            <h3 className="text-sm font-semibold text-slate-900">Attached Addon Repositories</h3>
-            <p className="text-xs text-slate-500">
-              Toggle repositories to mount into <code className="bg-slate-100 px-1 rounded">/mnt/extra-addons</code>. RunOdoo auto-scans <code className="bg-slate-100 px-1 rounded">__manifest__.py</code> paths.
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Attached Addon Repositories</h3>
+                <p className="text-xs text-slate-500">
+                  Attach/Detach otomatis me-redeploy container dan menjalankan <strong>Update Apps List</strong> di semua database Odoo.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  setBusyAction('update-apps-list')
+                  try {
+                    const res = await api.updateAppsList(inst.id)
+                    if (res.updated && res.updated.length > 0) {
+                      notify(`Apps List updated on: ${res.updated.join(', ')}`)
+                    } else {
+                      notify('No initialized Odoo databases found to update.')
+                    }
+                  } catch (err) {
+                    notify(err instanceof Error ? err.message : 'Update Apps List failed', 'error')
+                  } finally {
+                    setBusyAction(null)
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+              >
+                {busyAction === 'update-apps-list' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-[#714B67]" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5 text-[#714B67]" />
+                )}
+                {busyAction === 'update-apps-list' ? 'Updating Apps List...' : 'Update Apps List'}
+              </button>
+            </div>
             {allAddons.length === 0 ? (
               <p className="text-xs text-slate-500">No addon repositories in library yet. Add Git repos or upload ZIPs in the Addons page.</p>
             ) : (
