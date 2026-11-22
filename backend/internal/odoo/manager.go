@@ -331,7 +331,9 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 		}(updated)
 		return &updated, nil
 	}
-	_ = m.proxy.SyncAll(ctx)
+	if err := m.proxy.SyncAll(ctx); err != nil {
+		return &updated, fmt.Errorf("domain saved, but Nginx proxy failed: %w", err)
+	}
 	return &updated, nil
 }
 

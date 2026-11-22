@@ -23,15 +23,39 @@ func NewManager(cfg *config.Config, st *store.Store, dc *docker.Client) *Manager
 	return &Manager{cfg: cfg, store: st, docker: dc}
 }
 
-// EnsureNginx ensures the managed Nginx reverse proxy container is running.
+// EnsureNginx ensures the managed Nginx reverse proxy container is created, running, and synced.
 func (m *Manager) EnsureNginx(ctx context.Context) error {
 	if err := m.docker.EnsureNetwork(ctx, m.cfg.DockerNetwork); err != nil {
 		return err
 	}
-	if err := m.SyncAll(ctx); err != nil {
+	if err := m.writeConfigs(); err != nil {
 		return err
 	}
+	if err := m.ensureNginxContainer(ctx); err != nil {
+		return err
+	}
+	return m.ReloadNginx(ctx)
+}
 
+// SyncAll regenerates Nginx configs for the panel and all Odoo instances,
+// auto-starts Nginx if any domain is configured, and reloads Nginx.
+func (m *Manager) SyncAll(ctx context.Context) error {
+	hasAnyDomain, err := m.writeConfigsWithFlag()
+	if err != nil {
+		return err
+	}
+	if hasAnyDomain {
+		if err := m.ensureNginxContainer(ctx); err != nil {
+			return err
+		}
+	}
+	return m.ReloadNginx(ctx)
+}
+
+func (m *Manager) ensureNginxContainer(ctx context.Context) error {
+	if err := m.docker.EnsureNetwork(ctx, m.cfg.DockerNetwork); err != nil {
+		return err
+	}
 	insp, err := m.docker.InspectContainer(ctx, m.cfg.NginxContainer)
 	if err == nil {
 		if !insp.State.Running {
@@ -72,11 +96,15 @@ func (m *Manager) EnsureNginx(ctx context.Context) error {
 	return m.docker.StartContainer(ctx, m.cfg.NginxContainer)
 }
 
-// SyncAll regenerates Nginx configs for the panel and all Odoo instances, then reloads Nginx if running.
-func (m *Manager) SyncAll(ctx context.Context) error {
+func (m *Manager) writeConfigs() error {
+	_, err := m.writeConfigsWithFlag()
+	return err
+}
+
+func (m *Manager) writeConfigsWithFlag() (bool, error) {
 	confDir := m.cfg.NginxConfDir()
 	if err := os.MkdirAll(confDir, 0o755); err != nil {
-		return err
+		return false, err
 	}
 
 	// Clean previously generated runodoo-*.conf files
@@ -88,6 +116,7 @@ func (m *Manager) SyncAll(ctx context.Context) error {
 	}
 
 	st := m.store.Get()
+	hasAnyDomain := false
 
 	// 1. Default catch-all server for ACME challenges & unknown hosts
 	defaultConf := `server {
@@ -104,18 +133,19 @@ func (m *Manager) SyncAll(ctx context.Context) error {
 }
 `
 	if err := os.WriteFile(filepath.Join(confDir, "runodoo-00-default.conf"), []byte(defaultConf), 0o644); err != nil {
-		return err
+		return false, err
 	}
 
 	// 2. Panel domain config (e.g., panel.runodoo.example.com -> runodoo:3000)
 	if st.Settings.RootDomain != "" {
+		hasAnyDomain = true
 		panelHost := st.Settings.PanelSubdomain + "." + st.Settings.RootDomain
 		if st.Settings.PanelSubdomain == "" || st.Settings.PanelSubdomain == "@" {
 			panelHost = st.Settings.RootDomain
 		}
 		panelConf := m.renderPanelVhost(panelHost, st.Settings.PanelHasSSL, st.Settings.PanelForceHTTPS)
 		if err := os.WriteFile(filepath.Join(confDir, "runodoo-01-panel.conf"), []byte(panelConf), 0o644); err != nil {
-			return err
+			return false, err
 		}
 	}
 
@@ -140,16 +170,19 @@ func (m *Manager) SyncAll(ctx context.Context) error {
 			if strings.TrimSpace(d.Domain) == "" {
 				continue
 			}
+			hasAnyDomain = true
 			sb.WriteString(m.renderOdooVhost(inst.ContainerName, d))
 			sb.WriteString("\n")
 		}
-		fileName := fmt.Sprintf("runodoo-app-%s.conf", inst.Name)
-		if err := os.WriteFile(filepath.Join(confDir, fileName), []byte(sb.String()), 0o644); err != nil {
-			return err
+		if sb.Len() > 0 {
+			fileName := fmt.Sprintf("runodoo-app-%s.conf", inst.Name)
+			if err := os.WriteFile(filepath.Join(confDir, fileName), []byte(sb.String()), 0o644); err != nil {
+				return false, err
+			}
 		}
 	}
 
-	return m.ReloadNginx(ctx)
+	return hasAnyDomain, nil
 }
 
 // ReloadNginx tests and reloads Nginx if the container is currently running.
@@ -244,9 +277,11 @@ func (m *Manager) renderPanelVhost(domain string, hasSSL, forceHTTPS bool) strin
 `)
 	} else {
 		sb.WriteString(fmt.Sprintf(`
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $panel_upstream http://%s;
     client_max_body_size 512m;
     location / {
-        proxy_pass http://%s;
+        proxy_pass $panel_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -266,10 +301,12 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/%s/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/%s/privkey.pem;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $panel_upstream http://%s;
     client_max_body_size 512m;
 
     location / {
-        proxy_pass http://%s;
+        proxy_pass $panel_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -285,7 +322,11 @@ server {
 func (m *Manager) renderOdooVhost(containerName string, d models.DomainConfig) string {
 	useSSL := d.HasSSL && m.CertExists(d.Domain)
 
-	odooLocations := fmt.Sprintf(`    client_max_body_size 512m;
+	odooLocations := fmt.Sprintf(`    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $odoo_http http://%s:8069;
+    set $odoo_ws http://%s:8072;
+
+    client_max_body_size 512m;
     proxy_read_timeout 720s;
     proxy_connect_timeout 720s;
     proxy_send_timeout 720s;
@@ -293,7 +334,7 @@ func (m *Manager) renderOdooVhost(containerName string, d models.DomainConfig) s
     proxy_buffer_size 128k;
 
     location /websocket {
-        proxy_pass http://%s:8072;
+        proxy_pass $odoo_ws;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -304,7 +345,7 @@ func (m *Manager) renderOdooVhost(containerName string, d models.DomainConfig) s
     }
 
     location /longpolling {
-        proxy_pass http://%s:8072;
+        proxy_pass $odoo_ws;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -312,7 +353,7 @@ func (m *Manager) renderOdooVhost(containerName string, d models.DomainConfig) s
     }
 
     location / {
-        proxy_pass http://%s:8069;
+        proxy_pass $odoo_http;
         proxy_redirect off;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -322,7 +363,7 @@ func (m *Manager) renderOdooVhost(containerName string, d models.DomainConfig) s
 
     gzip on;
     gzip_types text/css text/scss text/plain text/xml application/xml application/json application/javascript;
-`, containerName, containerName, containerName)
+`, containerName, containerName)
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf(`server {
