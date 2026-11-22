@@ -48,6 +48,18 @@ else
     fi
 fi
 
+# 2b. Configure global Docker DNS (fixes Alpine apk / image pull DNS issues)
+if [ ! -f /etc/docker/daemon.json ] || ! sudo grep -q '"dns"' /etc/docker/daemon.json 2>/dev/null; then
+    echo "Configuring global Docker DNS (1.1.1.1, 8.8.8.8)..."
+    sudo mkdir -p /etc/docker
+    echo '{"dns": ["1.1.1.1", "8.8.8.8"]}' | sudo tee /etc/docker/daemon.json >/dev/null
+    if command -v systemctl >/dev/null 2>&1; then
+        echo "Restarting Docker daemon to apply DNS settings..."
+        sudo systemctl restart docker || true
+        sleep 2
+    fi
+fi
+
 # 3. Prepare host data directory
 echo "Preparing data directory: ${DATA_DIR}"
 sudo mkdir -p "${DATA_DIR}/config" "${DATA_DIR}/instances" "${DATA_DIR}/addons" \
