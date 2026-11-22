@@ -147,6 +147,11 @@ func (c *Client) EnsureNetwork(ctx context.Context, name string) error {
 
 // PullImage pulls a Docker image from registry.
 func (c *Client) PullImage(ctx context.Context, image string) error {
+	return c.PullImageWithProgress(ctx, image, nil)
+}
+
+// PullImageWithProgress pulls a Docker image and streams formatted progress lines to onLine.
+func (c *Client) PullImageWithProgress(ctx context.Context, image string, onLine func(string)) error {
 	u := "/images/create?fromImage=" + url.QueryEscape(image)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+u, nil)
 	if err != nil {
@@ -157,9 +162,44 @@ func (c *Client) PullImage(ctx context.Context, image string) error {
 		return err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("docker pull %s failed (%d): %s", image, resp.StatusCode, string(body))
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	lastStatusByID := map[string]string{}
+	for {
+		var evt struct {
+			Status   string `json:"status"`
+			ID       string `json:"id"`
+			Progress string `json:"progress"`
+			Error    string `json:"error"`
+		}
+		if err := dec.Decode(&evt); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		if evt.Error != "" {
+			return fmt.Errorf("docker pull %s error: %s", image, evt.Error)
+		}
+		if onLine == nil || evt.Status == "" {
+			continue
+		}
+		// Avoid flooding logs with duplicate per-byte progress events; log status transitions per layer
+		key := evt.ID
+		if key != "" {
+			if lastStatusByID[key] == evt.Status {
+				continue
+			}
+			lastStatusByID[key] = evt.Status
+			onLine(fmt.Sprintf("[%s] %s", evt.ID, evt.Status))
+		} else {
+			onLine(evt.Status)
+		}
 	}
 	return nil
 }

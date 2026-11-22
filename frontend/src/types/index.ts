@@ -155,3 +155,14 @@ export interface ContainerStats {
   memoryLimitMb: number
   memoryPercent: number
 }
+
+export interface DeployProgress {
+  instanceId: string
+  status: 'idle' | 'deploying' | 'running' | 'failed'
+  step: string
+  percent: number
+  logs: string[]
+  error?: string
+  startedAt?: string
+  finishedAt?: string
+}

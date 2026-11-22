@@ -57,12 +57,13 @@ type UpdateInstanceRequest struct {
 }
 
 type Manager struct {
-	cfg    *config.Config
-	store  *store.Store
-	docker *docker.Client
-	db     *database.Manager
-	addons *addons.Manager
-	proxy  *proxy.Manager
+	cfg     *config.Config
+	store   *store.Store
+	docker  *docker.Client
+	db      *database.Manager
+	addons  *addons.Manager
+	proxy   *proxy.Manager
+	tracker *deployTracker
 }
 
 func NewManager(
@@ -74,13 +75,22 @@ func NewManager(
 	pm *proxy.Manager,
 ) *Manager {
 	return &Manager{
-		cfg:    cfg,
-		store:  st,
-		docker: dc,
-		db:     dbm,
-		addons: am,
-		proxy:  pm,
+		cfg:     cfg,
+		store:   st,
+		docker:  dc,
+		db:      dbm,
+		addons:  am,
+		proxy:   pm,
+		tracker: newDeployTracker(),
 	}
+}
+
+// GetDeployProgress returns live deployment status and logs for an instance.
+func (m *Manager) GetDeployProgress(idOrName string) *DeployProgress {
+	if inst, ok := m.store.FindInstance(idOrName); ok {
+		return m.tracker.Get(inst.ID)
+	}
+	return m.tracker.Get(idOrName)
 }
 
 // CreateInstance provisions database, odoo.conf, Docker container, and Nginx vhost for a new Odoo instance.
@@ -178,38 +188,7 @@ func (m *Manager) CreateInstance(ctx context.Context, req CreateInstanceRequest)
 		UpdatedAt:         now,
 	}
 
-	// 1. Ensure Docker network
-	if err := m.docker.EnsureNetwork(ctx, m.cfg.DockerNetwork); err != nil {
-		return nil, fmt.Errorf("network setup failed: %w", err)
-	}
-
-	// 2. Provision PostgreSQL (shared role or dedicated container)
-	if dbMode == models.DBModeShared {
-		if err := m.db.EnsureSharedRole(ctx, inst.DBUser, inst.DBPassword); err != nil {
-			return nil, fmt.Errorf("shared postgres setup failed: %w", err)
-		}
-	} else {
-		if err := m.db.CreateDedicatedPostgres(ctx, inst); err != nil {
-			return nil, fmt.Errorf("dedicated postgres setup failed: %w", err)
-		}
-	}
-
-	// Optionally pre-create default database if requested
-	if inst.DefaultDBName != "" {
-		_ = m.db.CreateDatabase(ctx, inst, inst.DefaultDBName)
-	}
-
-	// 3. Prepare instance directories & odoo.conf
-	if err := m.writeInstanceFiles(inst); err != nil {
-		return nil, fmt.Errorf("failed writing instance config: %w", err)
-	}
-
-	// 4. Pull & start Odoo container
-	if err := m.deployContainer(ctx, inst); err != nil {
-		return nil, fmt.Errorf("failed deploying odoo container: %w", err)
-	}
-
-	// 5. Persist in state
+	// Save instance immediately so UI can navigate and track live deployment progress
 	if err := m.store.Update(func(s *models.State) error {
 		s.Instances = append(s.Instances, inst)
 		return nil
@@ -217,10 +196,70 @@ func (m *Manager) CreateInstance(ctx context.Context, req CreateInstanceRequest)
 		return nil, err
 	}
 
-	// 6. Sync Nginx reverse proxy
-	_ = m.proxy.SyncAll(ctx)
+	m.tracker.Start(inst.ID, fmt.Sprintf("Starting deployment for %s (Odoo %s Community)...", inst.Name, inst.Version))
+	go m.runInitialDeploy(inst)
 
 	return &inst, nil
+}
+
+func (m *Manager) runInitialDeploy(inst models.OdooInstance) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	// 1. Ensure Docker network
+	m.tracker.Step(inst.ID, fmt.Sprintf("Ensuring Docker network '%s'...", m.cfg.DockerNetwork), 12)
+	if err := m.docker.EnsureNetwork(ctx, m.cfg.DockerNetwork); err != nil {
+		m.tracker.Fail(inst.ID, fmt.Errorf("network setup failed: %w", err))
+		return
+	}
+
+	// 2. Provision PostgreSQL (shared role or dedicated container)
+	if inst.DBMode == models.DBModeShared {
+		m.tracker.Step(inst.ID, fmt.Sprintf("Provisioning Shared PostgreSQL role '%s'...", inst.DBUser), 25)
+		if err := m.db.EnsureSharedRole(ctx, inst.DBUser, inst.DBPassword); err != nil {
+			m.tracker.Fail(inst.ID, fmt.Errorf("shared postgres setup failed: %w", err))
+			return
+		}
+		m.tracker.Log(inst.ID, fmt.Sprintf("Shared PostgreSQL ready (%s)", inst.DBContainerName))
+	} else {
+		m.tracker.Step(inst.ID, fmt.Sprintf("Creating Dedicated PostgreSQL container '%s'...", inst.DBContainerName), 25)
+		if err := m.db.CreateDedicatedPostgres(ctx, inst); err != nil {
+			m.tracker.Fail(inst.ID, fmt.Errorf("dedicated postgres setup failed: %w", err))
+			return
+		}
+		m.tracker.Log(inst.ID, fmt.Sprintf("Dedicated PostgreSQL ready (%s)", inst.DBContainerName))
+	}
+
+	if inst.DefaultDBName != "" {
+		m.tracker.Log(inst.ID, fmt.Sprintf("Creating initial database '%s'...", inst.DefaultDBName))
+		if err := m.db.CreateDatabase(ctx, inst, inst.DefaultDBName); err != nil {
+			m.tracker.Log(inst.ID, fmt.Sprintf("Warning creating initial DB: %v", err))
+		}
+	}
+
+	// 3. Prepare instance directories & odoo.conf
+	m.tracker.Step(inst.ID, "Generating odoo.conf & resolving addons_path...", 42)
+	if err := m.writeInstanceFiles(inst); err != nil {
+		m.tracker.Fail(inst.ID, fmt.Errorf("failed writing instance config: %w", err))
+		return
+	}
+	if len(inst.RecommendedAddons) > 0 {
+		m.tracker.Log(inst.ID, fmt.Sprintf("Selected %d recommended addon(s)", len(inst.RecommendedAddons)))
+	}
+
+	// 4. Pull & start Odoo container with live progress
+	if err := m.deployContainerWithProgress(ctx, inst); err != nil {
+		m.tracker.Fail(inst.ID, err)
+		return
+	}
+
+	// 5. Sync Nginx reverse proxy
+	m.tracker.Step(inst.ID, "Syncing Nginx reverse proxy configuration...", 95)
+	if err := m.proxy.SyncAll(ctx); err != nil {
+		m.tracker.Log(inst.ID, fmt.Sprintf("Warning syncing Nginx: %v", err))
+	}
+
+	m.tracker.Complete(inst.ID)
 }
 
 // UpdateInstance modifies an instance's configuration and optionally redeploys its container.
@@ -278,9 +317,19 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 		return nil, err
 	}
 	if req.Redeploy {
-		if err := m.deployContainer(ctx, updated); err != nil {
-			return nil, err
-		}
+		m.tracker.Start(updated.ID, fmt.Sprintf("Redeploying %s...", updated.Name))
+		go func(inst models.OdooInstance) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+			defer cancel()
+			if err := m.deployContainerWithProgress(ctx, inst); err != nil {
+				m.tracker.Fail(inst.ID, err)
+				return
+			}
+			m.tracker.Step(inst.ID, "Syncing Nginx reverse proxy...", 95)
+			_ = m.proxy.SyncAll(ctx)
+			m.tracker.Complete(inst.ID)
+		}(updated)
+		return &updated, nil
 	}
 	_ = m.proxy.SyncAll(ctx)
 	return &updated, nil
@@ -380,7 +429,10 @@ func (m *Manager) enrichStatus(ctx context.Context, inst models.OdooInstance, se
 		DBStatus:     "unknown",
 	}
 
-	if insp, err := m.docker.InspectContainer(ctx, inst.ContainerName); err == nil {
+	if prog := m.tracker.Get(inst.ID); prog.Status == "deploying" {
+		res.Status = "deploying"
+		res.StateText = prog.Step
+	} else if insp, err := m.docker.InspectContainer(ctx, inst.ContainerName); err == nil {
 		res.ContainerID = insp.ID
 		res.Status = insp.State.Status
 		if insp.State.Running {
@@ -460,13 +512,19 @@ func (m *Manager) renderOdooConf(inst models.OdooInstance) string {
 	return sb.String()
 }
 
-func (m *Manager) deployContainer(ctx context.Context, inst models.OdooInstance) error {
+func (m *Manager) deployContainerWithProgress(ctx context.Context, inst models.OdooInstance) error {
 	if !m.docker.ImageExists(ctx, inst.Image) {
-		if err := m.docker.PullImage(ctx, inst.Image); err != nil {
+		m.tracker.Step(inst.ID, fmt.Sprintf("Pulling Docker image %s (this may take a few minutes)...", inst.Image), 55)
+		if err := m.docker.PullImageWithProgress(ctx, inst.Image, func(line string) {
+			m.tracker.Log(inst.ID, line)
+		}); err != nil {
 			return fmt.Errorf("failed pulling image %s: %w", inst.Image, err)
 		}
+	} else {
+		m.tracker.Step(inst.ID, fmt.Sprintf("Docker image %s already cached locally", inst.Image), 70)
 	}
 
+	m.tracker.Step(inst.ID, fmt.Sprintf("Creating & starting container '%s'...", inst.ContainerName), 82)
 	// Remove existing container if redeploying
 	_ = m.docker.RemoveContainer(ctx, inst.ContainerName, true)
 
@@ -511,7 +569,11 @@ func (m *Manager) deployContainer(ctx context.Context, inst models.OdooInstance)
 	if err != nil {
 		return err
 	}
-	return m.docker.StartContainer(ctx, inst.ContainerName)
+	if err := m.docker.StartContainer(ctx, inst.ContainerName); err != nil {
+		return err
+	}
+	m.tracker.Log(inst.ID, fmt.Sprintf("Container '%s' started successfully", inst.ContainerName))
+	return nil
 }
 
 func resolveImage(version models.OdooVersion, customImage string) string {

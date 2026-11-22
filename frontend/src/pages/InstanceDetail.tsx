@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
+  AlertCircle,
   ArrowLeft,
+  CheckCircle2,
   Copy,
   Database,
   ExternalLink,
   FileCode,
   Globe,
+  Loader2,
   Play,
   Plus,
   Puzzle,
@@ -18,7 +21,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { api } from '../api/client'
-import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DomainConfig, OdooInstance } from '../types'
+import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DeployProgress, DomainConfig, OdooInstance } from '../types'
 import { StatusBadge } from '../components/UI'
 
 type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'config' | 'logs'
@@ -48,6 +51,9 @@ export function InstanceDetail({
   const [upgradeDb, setUpgradeDb] = useState('')
   const [upgradeMods, setUpgradeMods] = useState('')
   const [busy, setBusy] = useState(false)
+  const [deploy, setDeploy] = useState<DeployProgress | null>(null)
+  const [hideDeployCard, setHideDeployCard] = useState(false)
+  const deployLogEndRef = useRef<HTMLDivElement | null>(null)
 
   const loadInstance = async () => {
     try {
@@ -64,9 +70,44 @@ export function InstanceDetail({
     }
   }
 
+  const refreshDeployStatus = async () => {
+    try {
+      const d = await api.deployStatus(instanceId)
+      setDeploy(d)
+      if (d.status === 'deploying') {
+        setHideDeployCard(false)
+      }
+      return d
+    } catch {
+      return null
+    }
+  }
+
   useEffect(() => {
+    setHideDeployCard(false)
     loadInstance()
+    refreshDeployStatus()
   }, [instanceId])
+
+  useEffect(() => {
+    if (!deploy || deploy.status !== 'deploying') return
+    const timer = setInterval(async () => {
+      const d = await refreshDeployStatus()
+      if (d && d.status !== 'deploying') {
+        loadInstance()
+        if (d.status === 'running') {
+          notify('Deployment selesai — Odoo sudah berjalan!')
+        } else if (d.status === 'failed') {
+          notify(`Deployment gagal: ${d.error || 'lihat log'}`, 'error')
+        }
+      }
+    }, 1500)
+    return () => clearInterval(timer)
+  }, [deploy?.status, instanceId])
+
+  useEffect(() => {
+    deployLogEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [deploy?.logs?.length])
 
   useEffect(() => {
     if (!inst) return
@@ -170,7 +211,9 @@ export function InstanceDetail({
     setBusy(true)
     try {
       await api.updateInstance(inst.id, { addonRepoIds: next, redeploy: true })
-      notify('Addons updated & Odoo container redeployed!')
+      notify('Redeployment started...')
+      setHideDeployCard(false)
+      await refreshDeployStatus()
       loadInstance()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed updating addons', 'error')
@@ -203,7 +246,11 @@ export function InstanceDetail({
         resources: { ...inst.resources, workers },
         redeploy,
       })
-      notify(redeploy ? 'Config saved & container redeployed!' : 'Config saved!')
+      notify(redeploy ? 'Redeployment started...' : 'Config saved!')
+      if (redeploy) {
+        setHideDeployCard(false)
+        await refreshDeployStatus()
+      }
       loadInstance()
       const c = await api.instanceConf(inst.id)
       setGeneratedConf(c.generatedConf)
@@ -281,6 +328,78 @@ export function InstanceDetail({
           </button>
         </div>
       </div>
+
+      {/* Live Deployment Progress & Logs Card */}
+      {deploy && deploy.status !== 'idle' && !hideDeployCard && (
+        <div
+          className={`rounded-xl border p-5 shadow-xs space-y-3 ${
+            deploy.status === 'failed'
+              ? 'border-rose-300 bg-rose-50/70'
+              : deploy.status === 'running'
+              ? 'border-emerald-300 bg-emerald-50/60'
+              : 'border-purple-300 bg-white'
+          }`}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              {deploy.status === 'deploying' && <Loader2 className="h-5 w-5 animate-spin text-[#714B67]" />}
+              {deploy.status === 'running' && <CheckCircle2 className="h-5 w-5 text-emerald-600" />}
+              {deploy.status === 'failed' && <AlertCircle className="h-5 w-5 text-rose-600" />}
+              <div>
+                <div className="text-sm font-bold text-slate-900">
+                  {deploy.status === 'deploying'
+                    ? `Deploying... (${deploy.percent}%)`
+                    : deploy.status === 'running'
+                    ? 'Deployment Selesai!'
+                    : 'Deployment Gagal'}
+                </div>
+                <div className="text-xs text-slate-600">{deploy.step}</div>
+              </div>
+            </div>
+            {deploy.status !== 'deploying' && (
+              <button
+                onClick={() => setHideDeployCard(true)}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 cursor-pointer"
+              >
+                Tutup
+              </button>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+            <div
+              className={`h-full transition-all duration-500 ${
+                deploy.status === 'failed'
+                  ? 'bg-rose-500'
+                  : deploy.status === 'running'
+                  ? 'bg-emerald-500'
+                  : 'bg-[#714B67]'
+              }`}
+              style={{ width: `${Math.max(5, Math.min(100, deploy.percent || 5))}%` }}
+            />
+          </div>
+
+          {/* Live deployment logs */}
+          <div className="max-h-64 overflow-y-auto rounded-lg bg-slate-950 p-3.5 font-mono text-xs text-emerald-300">
+            {(deploy.logs || []).map((line, i) => (
+              <div
+                key={i}
+                className={
+                  line.includes('ERROR:') || line.includes('✗')
+                    ? 'text-rose-400'
+                    : line.includes('==>')
+                    ? 'text-sky-300 font-semibold mt-1'
+                    : 'text-slate-300'
+                }
+              >
+                {line}
+              </div>
+            ))}
+            <div ref={deployLogEndRef} />
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-1 border-b border-slate-200">
@@ -518,7 +637,9 @@ export function InstanceDetail({
                     setBusy(true)
                     try {
                       await api.updateInstance(inst.id, { recommendedAddons: selectedRecs, redeploy: true })
-                      notify('Recommended addons updated & container redeployed!')
+                      notify('Redeployment started...')
+                      setHideDeployCard(false)
+                      await refreshDeployStatus()
                       loadInstance()
                     } catch (err) {
                       notify(err instanceof Error ? err.message : 'Failed updating recommended addons', 'error')

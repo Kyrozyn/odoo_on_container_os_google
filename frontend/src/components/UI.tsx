@@ -7,10 +7,13 @@ export function StatusBadge({ status }: { status: string }) {
   if (s === 'running') {
     cls = 'bg-emerald-50 text-emerald-700 border-emerald-200'
     dot = 'bg-emerald-500'
+  } else if (s === 'deploying') {
+    cls = 'bg-purple-50 text-[#714B67] border-purple-200'
+    dot = 'bg-[#714B67] animate-ping'
   } else if (s === 'restarting') {
     cls = 'bg-amber-50 text-amber-700 border-amber-200'
     dot = 'bg-amber-500 animate-pulse'
-  } else if (s === 'exited' || s === 'stopped' || s === 'dead') {
+  } else if (s === 'exited' || s === 'stopped' || s === 'dead' || s === 'failed') {
     cls = 'bg-rose-50 text-rose-700 border-rose-200'
     dot = 'bg-rose-500'
   }

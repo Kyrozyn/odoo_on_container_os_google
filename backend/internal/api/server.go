@@ -93,6 +93,7 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("POST /api/instances/{id}/stop", s.handleStopInstance)
 	protected.HandleFunc("POST /api/instances/{id}/restart", s.handleRestartInstance)
 	protected.HandleFunc("GET /api/instances/{id}/logs", s.handleInstanceLogs)
+	protected.HandleFunc("GET /api/instances/{id}/deploy-status", s.handleDeployStatus)
 	protected.HandleFunc("GET /api/instances/{id}/stats", s.handleInstanceStats)
 	protected.HandleFunc("GET /api/instances/{id}/conf", s.handleInstanceConf)
 	protected.HandleFunc("POST /api/instances/{id}/ssl", s.handleInstanceSSL)
@@ -401,6 +402,10 @@ func (s *Server) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"logs": logs})
+}
+
+func (s *Server) handleDeployStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.odoo.GetDeployProgress(r.PathValue("id")))
 }
 
 func (s *Server) handleInstanceStats(w http.ResponseWriter, r *http.Request) {

@@ -6,6 +6,7 @@ import type {
   ContainerStats,
   ContainerSummary,
   DatabaseInfo,
+  DeployProgress,
   OdooInstance,
   OdooVersionInfo,
   PanelSettings,
@@ -91,6 +92,7 @@ export const api = {
   stopInstance: (id: string) => request<{ ok: boolean }>(`/api/instances/${id}/stop`, { method: 'POST' }),
   restartInstance: (id: string) => request<{ ok: boolean }>(`/api/instances/${id}/restart`, { method: 'POST' }),
   instanceLogs: (id: string, tail = 200) => request<{ logs: string }>(`/api/instances/${id}/logs?tail=${tail}`),
+  deployStatus: (id: string) => request<DeployProgress>(`/api/instances/${id}/deploy-status`),
   instanceStats: (id: string) => request<ContainerStats>(`/api/instances/${id}/stats`),
   instanceConf: (id: string) => request<{ generatedConf: string; customConf: string }>(`/api/instances/${id}/conf`),
   issueInstanceSsl: (id: string, domain: string, email?: string) =>

@@ -75,7 +75,7 @@ export function Instances({
         addonRepoIds: selectedAddons,
         recommendedAddons: selectedRecommended,
       })
-      notify(`Odoo ${created.version} instance "${created.name}" deployed!`)
+      notify(`Deployment started for "${created.name}"!`)
       setShowCreate(false)
       setName('')
       setCustomImage('')
@@ -84,7 +84,7 @@ export function Instances({
       setCustomDomain('')
       setSelectedAddons([])
       setSelectedRecommended([])
-      load()
+      onSelectInstance(created.id)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed creating instance', 'error')
     } finally {
@@ -466,7 +466,7 @@ export function Instances({
               disabled={creating}
               className="rounded-lg bg-[#714B67] px-5 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
             >
-              {creating ? 'Deploying (pulling image & starting)...' : 'Deploy Odoo Instance'}
+              {creating ? 'Starting Deployment...' : 'Deploy Odoo Instance'}
             </button>
           </div>
         </form>
