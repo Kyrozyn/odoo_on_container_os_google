@@ -43,9 +43,10 @@ export function InstanceDetail({
   const [recommendedAddons, setRecommendedAddons] = useState<AddonModule[]>([])
   const [selectedRecs, setSelectedRecs] = useState<string[]>([])
   const [logs, setLogs] = useState('')
-  const [generatedConf, setGeneratedConf] = useState('')
+  const [confRows, setConfRows] = useState<{ key: string; value: string }[]>([])
+  const [bulkConfMode, setBulkConfMode] = useState(false)
+  const [bulkConfText, setBulkConfText] = useState('')
   const [customConf, setCustomConf] = useState('')
-  const [workers, setWorkers] = useState(0)
   const [newDomain, setNewDomain] = useState('')
   const [newDbName, setNewDbName] = useState('')
   const [upgradeDb, setUpgradeDb] = useState('')
@@ -61,7 +62,6 @@ export function InstanceDetail({
       const data = await api.getInstance(instanceId)
       setInst(data)
       setCustomConf(data.customConf || '')
-      setWorkers(data.resources?.workers ?? 0)
       setSelectedRecs(data.recommendedAddons || [])
       if (data.status === 'running') {
         api.instanceStats(instanceId).then(setStats).catch(() => {})
@@ -122,10 +122,7 @@ export function InstanceDetail({
         if (list.length > 0 && !upgradeDb) setUpgradeDb(list[0].name)
       }).catch(() => {})
     } else if (tab === 'config') {
-      api.instanceConf(inst.id).then((c) => {
-        setGeneratedConf(c.generatedConf)
-        setCustomConf(c.customConf || '')
-      }).catch(() => {})
+      loadConf(inst.id)
     } else if (tab === 'logs') {
       api.instanceLogs(inst.id, 300).then((r) => setLogs(r.logs)).catch((e) => setLogs(e.message))
     }
@@ -249,24 +246,107 @@ export function InstanceDetail({
     }
   }
 
-  const handleSaveConfig = async (redeploy: boolean) => {
-    setBusyAction('save-conf')
+  const rowsToBulkText = (rows: { key: string; value: string }[]) =>
+    rows
+      .filter((r) => r.key.trim() !== '')
+      .map((r) => `${r.key.trim()} = ${r.value}`)
+      .join('\n')
+
+  const bulkTextToRows = (text: string): { key: string; value: string }[] => {
+    const out: { key: string; value: string }[] = []
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim()
+      if (!line || line.startsWith('#') || line.startsWith(';') || line === '[options]') continue
+      const eq = line.indexOf('=')
+      if (eq === -1) continue
+      const k = line.slice(0, eq).trim()
+      const v = line.slice(eq + 1).trim()
+      if (k) out.push({ key: k, value: v })
+    }
+    return out
+  }
+
+  const loadConf = async (id: string) => {
     try {
+      const c = await api.instanceConf(id)
+      const opts = c.confOptions || {}
+      const ordered = Array.isArray(c.orderedKeys) ? c.orderedKeys : []
+      const seen = new Set<string>()
+      const rows: { key: string; value: string }[] = []
+      for (const k of ordered) {
+        if (k in opts) {
+          rows.push({ key: k, value: opts[k] })
+          seen.add(k)
+        }
+      }
+      for (const k of Object.keys(opts).sort()) {
+        if (!seen.has(k)) rows.push({ key: k, value: opts[k] })
+      }
+      setConfRows(rows)
+      setBulkConfText(rowsToBulkText(rows))
+      setCustomConf(c.customConf || '')
+    } catch {
+      // ignore
+    }
+  }
+
+  const toggleBulkMode = (checked: boolean) => {
+    if (checked) {
+      setBulkConfText(rowsToBulkText(confRows))
+    } else {
+      setConfRows(bulkTextToRows(bulkConfText))
+    }
+    setBulkConfMode(checked)
+  }
+
+  const buildLiveConfPreview = () => {
+    const rows = bulkConfMode ? bulkTextToRows(bulkConfText) : confRows
+    const lines = ['[options]', ...rows.filter((r) => r.key.trim()).map((r) => `${r.key.trim()} = ${r.value}`)]
+    if (customConf.trim()) {
+      lines.push('', '# Additional custom directives', customConf.trim())
+    }
+    return lines.join('\n')
+  }
+
+  const handleSaveConfig = async (redeploy: boolean) => {
+    setBusyAction(redeploy ? 'save-conf-redeploy' : 'save-conf')
+    try {
+      const rows = bulkConfMode ? bulkTextToRows(bulkConfText) : confRows
+      const confOptions: Record<string, string> = {}
+      for (const r of rows) {
+        const k = r.key.trim()
+        if (k) confOptions[k] = r.value.trim()
+      }
       await api.updateInstance(inst.id, {
+        confOptions,
         customConf,
-        resources: { ...inst.resources, workers },
         redeploy,
       })
-      notify(redeploy ? 'Redeployment started...' : 'Config saved!')
+      notify(redeploy ? 'Config saved & redeployment started...' : 'odoo.conf saved!')
       if (redeploy) {
         setHideDeployCard(false)
         await refreshDeployStatus()
       }
-      loadInstance()
-      const c = await api.instanceConf(inst.id)
-      setGeneratedConf(c.generatedConf)
+      await loadInstance()
+      await loadConf(inst.id)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed saving config', 'error')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const handleResetConf = async () => {
+    setBusyAction('reset-conf')
+    try {
+      await api.updateInstance(inst.id, {
+        resetConfOptions: true,
+        redeploy: false,
+      })
+      notify('odoo.conf options reset to defaults!')
+      await loadConf(inst.id)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Failed resetting config', 'error')
     } finally {
       setBusyAction(null)
     }
@@ -846,46 +926,144 @@ export function InstanceDetail({
       )}
 
       {tab === 'config' && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
-            <h3 className="text-sm font-semibold text-slate-900">Tune Workers &amp; Custom odoo.conf</h3>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-700">Workers (0 for small VPS/e2-micro, 2–4+ for production)</label>
-              <input
-                type="number"
-                min={0}
-                max={32}
-                value={workers}
-                onChange={(e) => setWorkers(parseInt(e.target.value, 10) || 0)}
-                className="w-32 rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
-              />
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-5">
+          <div className="xl:col-span-3 space-y-4">
+            {/* CapRover-style Standard odoo.conf Editor (Key/Value + Bulk Edit) */}
+            <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">odoo.conf Options</h3>
+                  <p className="text-xs text-slate-500">
+                    Edit semua parameter <code className="bg-slate-100 px-1 rounded">[options]</code> satu per satu atau centang <strong>Bulk Edit</strong> (ala CapRover).
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={bulkConfMode}
+                      onChange={(e) => toggleBulkMode(e.target.checked)}
+                    />
+                    Bulk Edit
+                  </label>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={handleResetConf}
+                    className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+                  >
+                    {busyAction === 'reset-conf' ? 'Resetting...' : 'Reset Defaults'}
+                  </button>
+                </div>
+              </div>
+
+              {bulkConfMode ? (
+                <div className="space-y-1.5">
+                  <p className="text-[11px] text-slate-500">
+                    Format: <code className="bg-slate-100 px-1 rounded">key = value</code> (satu per baris). Uncheck <strong>Bulk Edit</strong> untuk kembali ke mode textbox.
+                  </p>
+                  <textarea
+                    rows={16}
+                    value={bulkConfText}
+                    onChange={(e) => setBulkConfText(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-slate-50 p-3 font-mono text-xs focus:border-[#714B67] focus:bg-white focus:outline-none"
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-12 gap-2 px-1 text-[11px] font-semibold uppercase text-slate-400">
+                    <div className="col-span-5">Key</div>
+                    <div className="col-span-6">Value</div>
+                    <div className="col-span-1" />
+                  </div>
+                  <div className="max-h-[420px] overflow-y-auto space-y-2 pr-1">
+                    {confRows.map((row, idx) => (
+                      <div key={idx} className="grid grid-cols-12 items-center gap-2">
+                        <input
+                          type="text"
+                          value={row.key}
+                          onChange={(e) => {
+                            const val = e.target.value
+                            setConfRows((prev) => prev.map((r, i) => (i === idx ? { ...r, key: val } : r)))
+                          }}
+                          placeholder="option_key"
+                          className="col-span-5 rounded-lg border border-slate-300 bg-slate-50 px-2.5 py-1.5 font-mono text-xs focus:border-[#714B67] focus:bg-white focus:outline-none"
+                        />
+                        <input
+                          type="text"
+                          value={row.value}
+                          onChange={(e) => {
+                            const val = e.target.value
+                            setConfRows((prev) => prev.map((r, i) => (i === idx ? { ...r, value: val } : r)))
+                          }}
+                          placeholder="value"
+                          className="col-span-6 rounded-lg border border-slate-300 px-2.5 py-1.5 font-mono text-xs focus:border-[#714B67] focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          title="Remove option"
+                          onClick={() => setConfRows((prev) => prev.filter((_, i) => i !== idx))}
+                          className="col-span-1 flex justify-center rounded-lg p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600 cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setConfRows((prev) => [...prev, { key: '', value: '' }])}
+                    className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-[#714B67] hover:text-[#714B67] cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Add Option
+                  </button>
+                </div>
+              )}
             </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-700">Additional Custom Directives</label>
+
+            {/* Additional Custom Directives */}
+            <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Additional Custom Directives</h3>
+                <p className="text-xs text-slate-500">
+                  Tambahkan directive khusus di luar opsi standar (akan ditambahkan di bagian akhir <code className="bg-slate-100 px-1 rounded">odoo.conf</code>).
+                </p>
+              </div>
               <textarea
-                rows={8}
+                rows={5}
                 value={customConf}
                 onChange={(e) => setCustomConf(e.target.value)}
-                placeholder="e.g.&#10;dbfilter = ^%h$&#10;log_level = info"
-                className="w-full rounded-lg border border-slate-300 p-3 font-mono text-xs"
+                placeholder="Contoh:&#10;dbfilter = ^%h$&#10;log_level = info&#10;without_demo = all"
+                className="w-full rounded-lg border border-slate-300 p-3 font-mono text-xs focus:border-[#714B67] focus:outline-none"
               />
-            </div>
-            <div className="flex gap-2">
-              <button
-                disabled={busy}
-                onClick={() => handleSaveConfig(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
-              >
-                {busyAction === 'save-conf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                {busyAction === 'save-conf' ? 'Saving & Redeploying...' : 'Save & Redeploy'}
-              </button>
+              <div className="flex flex-wrap gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleSaveConfig(false)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+                >
+                  {busyAction === 'save-conf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {busyAction === 'save-conf' ? 'Saving...' : 'Save Only'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleSaveConfig(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
+                >
+                  {busyAction === 'save-conf-redeploy' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  {busyAction === 'save-conf-redeploy' ? 'Saving & Redeploying...' : 'Save & Redeploy'}
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
-            <h3 className="text-sm font-semibold text-slate-900">Generated `/etc/odoo/odoo.conf`</h3>
-            <pre className="max-h-96 overflow-auto rounded-lg bg-slate-900 p-4 font-mono text-xs text-slate-100">
-              {generatedConf || 'Loading...'}
+          {/* Live Preview */}
+          <div className="xl:col-span-2 rounded-xl border border-slate-200 bg-white p-5 space-y-3 h-fit sticky top-6">
+            <h3 className="text-sm font-semibold text-slate-900">Live Preview `/etc/odoo/odoo.conf`</h3>
+            <pre className="max-h-[560px] overflow-auto rounded-lg bg-slate-900 p-4 font-mono text-xs text-slate-100 whitespace-pre-wrap">
+              {buildLiveConfPreview()}
             </pre>
           </div>
         </div>

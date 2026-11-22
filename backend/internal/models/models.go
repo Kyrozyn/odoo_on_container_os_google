@@ -76,7 +76,8 @@ type OdooInstance struct {
 	AddonRepoIDs      []string          `json:"addonRepoIds"`
 	RecommendedAddons []string          `json:"recommendedAddons"`
 	EnvVars           map[string]string `json:"envVars"`
-	CustomConf      string            `json:"customConf"`
+	ConfOptions       map[string]string `json:"confOptions"`
+	CustomConf        string            `json:"customConf"`
 	Resources       ResourceConfig    `json:"resources"`
 	CreatedAt       time.Time         `json:"createdAt"`
 	UpdatedAt       time.Time         `json:"updatedAt"`

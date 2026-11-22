@@ -431,6 +431,9 @@ func (s *Server) handleInstanceConf(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"generatedConf": s.odoo.ReadOdooConf(inst),
 		"customConf":    inst.CustomConf,
+		"confOptions":   s.odoo.EffectiveConfOptions(inst),
+		"orderedKeys":   odoo.StandardOdooConfKeys,
+		"envVars":       inst.EnvVars,
 	})
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,7 +52,9 @@ type UpdateInstanceRequest struct {
 	AddonRepoIDs      []string               `json:"addonRepoIds,omitempty"`
 	RecommendedAddons []string               `json:"recommendedAddons,omitempty"`
 	EnvVars           map[string]string      `json:"envVars,omitempty"`
-	CustomConf       *string                `json:"customConf,omitempty"`
+	ConfOptions       map[string]string      `json:"confOptions,omitempty"`
+	ResetConfOptions  bool                   `json:"resetConfOptions,omitempty"`
+	CustomConf        *string                `json:"customConf,omitempty"`
 	Resources        *models.ResourceConfig `json:"resources,omitempty"`
 	Redeploy         bool                   `json:"redeploy"`
 }
@@ -303,6 +306,14 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 				if req.EnvVars != nil {
 					inst.EnvVars = req.EnvVars
 				}
+				if req.ResetConfOptions {
+					inst.ConfOptions = map[string]string{}
+				} else if req.ConfOptions != nil {
+					inst.ConfOptions = req.ConfOptions
+					if pw, ok := req.ConfOptions["admin_passwd"]; ok && strings.TrimSpace(pw) != "" {
+						inst.AdminPassword = strings.TrimSpace(pw)
+					}
+				}
 				if req.CustomConf != nil {
 					inst.CustomConf = *req.CustomConf
 				}
@@ -503,32 +514,87 @@ func (m *Manager) writeInstanceFiles(inst models.OdooInstance) error {
 	return os.WriteFile(filepath.Join(confDir, "odoo.conf"), []byte(confContent), 0o644)
 }
 
-func (m *Manager) renderOdooConf(inst models.OdooInstance) string {
+// StandardOdooConfKeys defines the canonical display order for standard odoo.conf keys.
+var StandardOdooConfKeys = []string{
+	"http_interface",
+	"http_port",
+	"gevent_port",
+	"admin_passwd",
+	"db_host",
+	"db_port",
+	"db_user",
+	"db_password",
+	"addons_path",
+	"data_dir",
+	"proxy_mode",
+	"list_db",
+	"workers",
+	"limit_memory_soft",
+	"limit_memory_hard",
+	"limit_time_cpu",
+	"limit_time_real",
+	"max_cron_threads",
+}
+
+// EffectiveConfOptions returns the merged map of default odoo.conf options + user overrides.
+func (m *Manager) EffectiveConfOptions(inst models.OdooInstance) map[string]string {
 	addonsPath, _ := m.addons.ComputeAddonsPath(inst.AddonRepoIDs, inst.RecommendedAddons)
+	opts := map[string]string{
+		"http_interface":    "0.0.0.0",
+		"http_port":         "8069",
+		"gevent_port":       "8072",
+		"admin_passwd":      inst.AdminPassword,
+		"db_host":           inst.DBHost,
+		"db_port":           strconv.Itoa(inst.DBPort),
+		"db_user":           inst.DBUser,
+		"db_password":       inst.DBPassword,
+		"addons_path":       addonsPath,
+		"data_dir":          "/var/lib/odoo",
+		"proxy_mode":        "True",
+		"list_db":           "True",
+		"workers":           strconv.Itoa(inst.Resources.Workers),
+		"limit_memory_soft": strconv.FormatInt(inst.Resources.LimitMemorySoft, 10),
+		"limit_memory_hard": strconv.FormatInt(inst.Resources.LimitMemoryHard, 10),
+		"limit_time_cpu":    strconv.Itoa(inst.Resources.LimitTimeCPU),
+		"limit_time_real":   strconv.Itoa(inst.Resources.LimitTimeReal),
+		"max_cron_threads":  strconv.Itoa(inst.Resources.MaxCronThreads),
+	}
+	for k, v := range inst.ConfOptions {
+		cleanKey := strings.TrimSpace(k)
+		if cleanKey == "" {
+			continue
+		}
+		opts[cleanKey] = strings.TrimSpace(v)
+	}
+	return opts
+}
+
+func (m *Manager) renderOdooConf(inst models.OdooInstance) string {
+	opts := m.EffectiveConfOptions(inst)
+	seen := make(map[string]bool, len(StandardOdooConfKeys))
 
 	var sb strings.Builder
 	sb.WriteString("[options]\n")
-	sb.WriteString("http_interface = 0.0.0.0\n")
-	sb.WriteString("http_port = 8069\n")
-	sb.WriteString("gevent_port = 8072\n")
-	sb.WriteString(fmt.Sprintf("admin_passwd = %s\n", inst.AdminPassword))
-	sb.WriteString(fmt.Sprintf("db_host = %s\n", inst.DBHost))
-	sb.WriteString(fmt.Sprintf("db_port = %d\n", inst.DBPort))
-	sb.WriteString(fmt.Sprintf("db_user = %s\n", inst.DBUser))
-	sb.WriteString(fmt.Sprintf("db_password = %s\n", inst.DBPassword))
-	sb.WriteString(fmt.Sprintf("addons_path = %s\n", addonsPath))
-	sb.WriteString("data_dir = /var/lib/odoo\n")
-	sb.WriteString("proxy_mode = True\n")
-	sb.WriteString("list_db = True\n")
-	sb.WriteString(fmt.Sprintf("workers = %d\n", inst.Resources.Workers))
-	sb.WriteString(fmt.Sprintf("limit_memory_soft = %d\n", inst.Resources.LimitMemorySoft))
-	sb.WriteString(fmt.Sprintf("limit_memory_hard = %d\n", inst.Resources.LimitMemoryHard))
-	sb.WriteString(fmt.Sprintf("limit_time_cpu = %d\n", inst.Resources.LimitTimeCPU))
-	sb.WriteString(fmt.Sprintf("limit_time_real = %d\n", inst.Resources.LimitTimeReal))
-	sb.WriteString(fmt.Sprintf("max_cron_threads = %d\n", inst.Resources.MaxCronThreads))
+	for _, k := range StandardOdooConfKeys {
+		if v, ok := opts[k]; ok {
+			sb.WriteString(fmt.Sprintf("%s = %s\n", k, v))
+			seen[k] = true
+		}
+	}
+	// Render any additional user-defined options in sorted order
+	var extraKeys []string
+	for k := range opts {
+		if !seen[k] {
+			extraKeys = append(extraKeys, k)
+		}
+	}
+	sort.Strings(extraKeys)
+	for _, k := range extraKeys {
+		sb.WriteString(fmt.Sprintf("%s = %s\n", k, opts[k]))
+	}
 
 	if strings.TrimSpace(inst.CustomConf) != "" {
-		sb.WriteString("\n# Custom configuration\n")
+		sb.WriteString("\n# Additional custom directives\n")
 		sb.WriteString(strings.TrimSpace(inst.CustomConf) + "\n")
 	}
 	return sb.String()

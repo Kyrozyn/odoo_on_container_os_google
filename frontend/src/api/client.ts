@@ -94,7 +94,14 @@ export const api = {
   instanceLogs: (id: string, tail = 200) => request<{ logs: string }>(`/api/instances/${id}/logs?tail=${tail}`),
   deployStatus: (id: string) => request<DeployProgress>(`/api/instances/${id}/deploy-status`),
   instanceStats: (id: string) => request<ContainerStats>(`/api/instances/${id}/stats`),
-  instanceConf: (id: string) => request<{ generatedConf: string; customConf: string }>(`/api/instances/${id}/conf`),
+  instanceConf: (id: string) =>
+    request<{
+      generatedConf: string
+      customConf: string
+      confOptions: Record<string, string>
+      orderedKeys: string[]
+      envVars: Record<string, string>
+    }>(`/api/instances/${id}/conf`),
   issueInstanceSsl: (id: string, domain: string, email?: string) =>
     request<{ ok: boolean; logs: string }>(`/api/instances/${id}/ssl`, {
       method: 'POST',
