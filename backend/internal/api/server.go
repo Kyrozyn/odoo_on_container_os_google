@@ -536,18 +536,16 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "instance not found")
 		return
 	}
-	var body struct {
-		Name string `json:"name"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	var req database.CreateOdooDatabaseRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.db.CreateDatabase(r.Context(), inst, body.Name); err != nil {
+	if err := s.db.CreateOdooDatabase(r.Context(), inst, req); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "name": body.Name})
+	writeJSON(w, http.StatusCreated, map[string]any{"ok": true, "name": req.Name})
 }
 
 func (s *Server) handleDuplicateDatabase(w http.ResponseWriter, r *http.Request) {

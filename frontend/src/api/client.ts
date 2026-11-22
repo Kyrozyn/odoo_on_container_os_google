@@ -116,10 +116,21 @@ export const api = {
   // Databases
   listAllDatabases: () => request<DatabaseInfo[]>('/api/databases'),
   listInstanceDatabases: (id: string) => request<DatabaseInfo[]>(`/api/instances/${id}/databases`),
-  createDatabase: (instanceId: string, name: string) =>
+  createDatabase: (
+    instanceId: string,
+    payload: {
+      name: string
+      login: string
+      password: string
+      phone?: string
+      lang?: string
+      countryCode?: string
+      demo?: boolean
+    }
+  ) =>
     request<{ ok: boolean }>(`/api/instances/${instanceId}/databases`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify(payload),
     }),
   duplicateDatabase: (instanceId: string, sourceName: string, targetName: string) =>
     request<{ ok: boolean }>(`/api/instances/${instanceId}/databases/duplicate`, {

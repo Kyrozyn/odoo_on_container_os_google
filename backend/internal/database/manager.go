@@ -3,6 +3,9 @@ package database
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -209,7 +212,91 @@ WHERE d.datistemplate = false AND d.datname <> 'postgres'`
 	return dbs, nil
 }
 
-// CreateDatabase creates a new empty PostgreSQL database owned by the instance's user.
+// CreateOdooDatabaseRequest mirrors Odoo's /web/database/create form fields.
+type CreateOdooDatabaseRequest struct {
+	Name        string `json:"name"`
+	Login       string `json:"login"`
+	Password    string `json:"password"`
+	Phone       string `json:"phone"`
+	Lang        string `json:"lang"`
+	CountryCode string `json:"countryCode"`
+	Demo        bool   `json:"demo"`
+}
+
+var reAlertDanger = regexp.MustCompile(`(?s)alert-danger[^>]*>(.*?)</div>`)
+var reHTMLTags = regexp.MustCompile(`<[^>]+>`)
+
+// CreateOdooDatabase initializes a full Odoo database via the running Odoo container's /web/database/create endpoint.
+func (m *Manager) CreateOdooDatabase(ctx context.Context, inst models.OdooInstance, req CreateOdooDatabaseRequest) error {
+	req.Name = strings.TrimSpace(req.Name)
+	req.Login = strings.TrimSpace(req.Login)
+	if !validDBName.MatchString(req.Name) {
+		return fmt.Errorf("invalid database name '%s' (use letters, numbers, underscores, hyphens)", req.Name)
+	}
+	if req.Login == "" {
+		return fmt.Errorf("admin email/login is required")
+	}
+	if req.Password == "" {
+		return fmt.Errorf("admin password is required")
+	}
+	if req.Lang == "" {
+		req.Lang = "en_US"
+	}
+
+	form := url.Values{}
+	form.Set("master_pwd", inst.AdminPassword)
+	form.Set("name", req.Name)
+	form.Set("login", req.Login)
+	form.Set("password", req.Password)
+	form.Set("phone", strings.TrimSpace(req.Phone))
+	form.Set("lang", req.Lang)
+	form.Set("country_code", strings.TrimSpace(strings.ToLower(req.CountryCode)))
+	if req.Demo {
+		form.Set("demo", "true")
+	}
+
+	endpoint := fmt.Sprintf("http://%s:8069/web/database/create", inst.ContainerName)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{
+		Timeout: 10 * time.Minute,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("could not reach Odoo container '%s' (make sure it is running): %w", inst.ContainerName, err)
+	}
+	defer resp.Body.Close()
+
+	// Odoo redirects (303/302) to /web or /odoo on successful database creation
+	if resp.StatusCode == http.StatusSeeOther || resp.StatusCode == http.StatusFound {
+		return nil
+	}
+
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	bodyStr := string(bodyBytes)
+	if m := reAlertDanger.FindStringSubmatch(bodyStr); len(m) > 1 {
+		msg := strings.TrimSpace(reHTMLTags.ReplaceAllString(m[1], " "))
+		msg = strings.Join(strings.Fields(msg), " ")
+		if msg != "" {
+			return fmt.Errorf("Odoo error: %s", msg)
+		}
+	}
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("Odoo returned HTTP %d while creating database", resp.StatusCode)
+	}
+	return fmt.Errorf("Odoo did not confirm database creation (check master password or container logs)")
+}
+
+// CreateDatabase creates a new empty PostgreSQL database owned by the instance's user (used for restore).
 func (m *Manager) CreateDatabase(ctx context.Context, inst models.OdooInstance, dbName string) error {
 	if !validDBName.MatchString(dbName) {
 		return fmt.Errorf("invalid database name '%s' (use letters, numbers, underscores, hyphens)", dbName)

@@ -3,14 +3,13 @@ import { Copy, Database, Download, Loader2, Plus, RefreshCw, Trash2 } from 'luci
 import { api } from '../api/client'
 import type { DatabaseInfo, OdooInstance } from '../types'
 import { Modal } from '../components/UI'
+import { CreateDatabaseModal } from '../components/CreateDatabaseModal'
 
 export function Databases({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
   const [dbs, setDbs] = useState<DatabaseInfo[]>([])
   const [instances, setInstances] = useState<OdooInstance[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
-  const [selectedInst, setSelectedInst] = useState('')
-  const [dbName, setDbName] = useState('')
   const [dupTarget, setDupTarget] = useState<{ instId: string; src: string } | null>(null)
   const [dupNewName, setDupNewName] = useState('')
   const [busyKey, setBusyKey] = useState<string | null>(null)
@@ -19,9 +18,8 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
     setLoading(true)
     try {
       const [dbList, instList] = await Promise.all([api.listAllDatabases(), api.listInstances()])
-      setDbs(dbList)
-      setInstances(instList)
-      if (instList.length > 0 && !selectedInst) setSelectedInst(instList[0].id)
+      setDbs(Array.isArray(dbList) ? dbList : [])
+      setInstances(Array.isArray(instList) ? instList : [])
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading databases', 'error')
     } finally {
@@ -32,22 +30,6 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
   useEffect(() => {
     load()
   }, [])
-
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setBusyKey('create')
-    try {
-      await api.createDatabase(selectedInst, dbName.trim())
-      notify(`Database "${dbName.trim()}" created!`)
-      setDbName('')
-      setShowCreate(false)
-      load()
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed creating DB', 'error')
-    } finally {
-      setBusyKey(null)
-    }
-  }
 
   const handleDuplicate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -180,43 +162,21 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
         </div>
       </div>
 
-      <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Create PostgreSQL Database">
-        <form onSubmit={handleCreate} className="space-y-4">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">Target Odoo Instance</label>
-            <select
-              value={selectedInst}
-              onChange={(e) => setSelectedInst(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            >
-              {instances.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.name} (Odoo {i.version} — {i.dbMode})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-700">Database Name</label>
-            <input
-              type="text"
-              required
-              value={dbName}
-              onChange={(e) => setDbName(e.target.value)}
-              placeholder="e.g. prod_erp"
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
-          </div>
-          <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setShowCreate(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm cursor-pointer">
-              Cancel
-            </button>
-            <button type="submit" className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white cursor-pointer">
-              Create
-            </button>
-          </div>
-        </form>
-      </Modal>
+      <CreateDatabaseModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        instances={instances}
+        onSubmit={async (instanceId, payload) => {
+          try {
+            await api.createDatabase(instanceId, payload)
+            notify(`Odoo database "${payload.name}" initialized!`)
+            await load()
+          } catch (err) {
+            notify(err instanceof Error ? err.message : 'Failed creating DB', 'error')
+            throw err
+          }
+        }}
+      />
 
       <Modal open={!!dupTarget} onClose={() => setDupTarget(null)} title={`Duplicate "${dupTarget?.src}"`}>
         <form onSubmit={handleDuplicate} className="space-y-4">

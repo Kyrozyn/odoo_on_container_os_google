@@ -23,6 +23,7 @@ import {
 import { api } from '../api/client'
 import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DeployProgress, DomainConfig, OdooInstance } from '../types'
 import { StatusBadge } from '../components/UI'
+import { CreateDatabaseModal } from '../components/CreateDatabaseModal'
 
 type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'config' | 'logs'
 
@@ -48,7 +49,7 @@ export function InstanceDetail({
   const [bulkConfText, setBulkConfText] = useState('')
   const [customConf, setCustomConf] = useState('')
   const [newDomain, setNewDomain] = useState('')
-  const [newDbName, setNewDbName] = useState('')
+  const [showCreateDb, setShowCreateDb] = useState(false)
   const [upgradeDb, setUpgradeDb] = useState('')
   const [upgradeMods, setUpgradeMods] = useState('')
   const [busyAction, setBusyAction] = useState<string | null>(null)
@@ -191,23 +192,6 @@ export function InstanceDetail({
       loadInstance()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'SSL issuance failed', 'error')
-    } finally {
-      setBusyAction(null)
-    }
-  }
-
-  const handleCreateDb = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!newDbName.trim()) return
-    setBusyAction('create-db')
-    try {
-      await api.createDatabase(inst.id, newDbName.trim())
-      setNewDbName('')
-      notify(`Database "${newDbName.trim()}" created`)
-      const list = await api.listInstanceDatabases(inst.id)
-      setDbs(list)
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Create DB failed', 'error')
     } finally {
       setBusyAction(null)
     }
@@ -697,24 +681,19 @@ export function InstanceDetail({
       {tab === 'databases' && (
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h3 className="text-sm font-semibold text-slate-900">Instance Databases</h3>
-            <form onSubmit={handleCreateDb} className="flex gap-2">
-              <input
-                type="text"
-                value={newDbName}
-                onChange={(e) => setNewDbName(e.target.value)}
-                placeholder="new_db_name"
-                className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm"
-              />
-              <button
-                type="submit"
-                disabled={busy}
-                className="inline-flex items-center gap-1 rounded-lg bg-[#714B67] px-3 py-1.5 text-sm font-medium text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
-              >
-                {busyAction === 'create-db' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                {busyAction === 'create-db' ? 'Creating...' : 'Create DB'}
-              </button>
-            </form>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">Instance Databases</h3>
+              <p className="text-xs text-slate-500">
+                Create database langsung menginisialisasi Odoo (Admin user, Language, Country, Demo data).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowCreateDb(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-3.5 py-2 text-sm font-medium text-white hover:bg-[#5c3c54] cursor-pointer"
+            >
+              <Plus className="h-4 w-4" /> Create Database
+            </button>
           </div>
 
           <div className="overflow-x-auto">
@@ -1085,6 +1064,22 @@ export function InstanceDetail({
           </pre>
         </div>
       )}
+      <CreateDatabaseModal
+        open={showCreateDb}
+        onClose={() => setShowCreateDb(false)}
+        fixedInstanceId={inst.id}
+        onSubmit={async (instanceId, payload) => {
+          try {
+            await api.createDatabase(instanceId, payload)
+            notify(`Odoo database "${payload.name}" initialized!`)
+            const list = await api.listInstanceDatabases(instanceId)
+            setDbs(Array.isArray(list) ? list : [])
+          } catch (err) {
+            notify(err instanceof Error ? err.message : 'Create DB failed', 'error')
+            throw err
+          }
+        }}
+      />
     </div>
   )
 }
