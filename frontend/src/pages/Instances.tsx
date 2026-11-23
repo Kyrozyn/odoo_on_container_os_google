@@ -196,9 +196,13 @@ export function Instances({
                 <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700">
                   DB: {inst.dbMode}
                 </span>
-                {inst.exposePort && (
+                {inst.exposePort ? (
                   <span className="rounded-md bg-sky-50 px-2 py-0.5 text-sky-700">
                     :{inst.httpPort}
+                  </span>
+                ) : (
+                  <span className="rounded-md bg-emerald-50 px-2 py-0.5 text-emerald-700">
+                    Domain Only
                   </span>
                 )}
                 {inst.addonRepoIds?.length > 0 && (

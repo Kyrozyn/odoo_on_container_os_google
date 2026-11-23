@@ -197,6 +197,36 @@ export function InstanceDetail({
     }
   }
 
+  const hasDomain =
+    (inst.domains && inst.domains.length > 0) ||
+    (Boolean(inst.primaryUrl) && !inst.primaryUrl.startsWith(':'))
+
+  const handleToggleExposePort = async (nextExpose: boolean) => {
+    if (
+      !nextExpose &&
+      !hasDomain &&
+      !confirm('Belum ada domain yang terhubung ke instance ini. Jika Direct HTTP Port dimatikan sekarang, Odoo tidak bisa diakses dari luar sampai domain ditambahkan. Lanjutkan?')
+    ) {
+      return
+    }
+    setBusyAction('toggle-port')
+    try {
+      await api.updateInstance(inst.id, { exposePort: nextExpose, redeploy: true })
+      notify(
+        nextExpose
+          ? 'Direct HTTP port enabled — redeploying container...'
+          : 'Direct HTTP port disabled (domain only) — redeploying container...'
+      )
+      setHideDeployCard(false)
+      await refreshDeployStatus()
+      await loadInstance()
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Failed updating port exposure', 'error')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
   const handleToggleAddon = async (repoId: string) => {
     const current = inst.addonRepoIds || []
     const next = current.includes(repoId) ? current.filter((x) => x !== repoId) : [...current, repoId]
@@ -560,9 +590,26 @@ export function InstanceDetail({
                 <span className="text-slate-500">DB Host / User</span>
                 <span className="font-mono text-xs">{inst.dbHost} / {inst.dbUser}</span>
               </div>
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-slate-500">Direct HTTP Port</span>
-                <span className="font-mono text-xs">{inst.exposePort ? `0.0.0.0:${inst.httpPort} -> 8069` : 'Internal only'}</span>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs">
+                    {inst.exposePort ? `0.0.0.0:${inst.httpPort} -> 8069` : 'Disabled (Domain only)'}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleToggleExposePort(!inst.exposePort)}
+                    className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium disabled:opacity-50 cursor-pointer ${
+                      inst.exposePort
+                        ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                        : 'border-sky-300 bg-sky-50 text-sky-800 hover:bg-sky-100'
+                    }`}
+                  >
+                    {busyAction === 'toggle-port' && <Loader2 className="h-3 w-3 animate-spin" />}
+                    {inst.exposePort ? 'Disable Port' : 'Enable Port'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -589,7 +636,48 @@ export function InstanceDetail({
       )}
 
       {tab === 'domains' && (
-        <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-5">
+        <div className="space-y-5">
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-slate-900">Direct HTTP Port Access</h3>
+                  {inst.exposePort ? (
+                    <span className="rounded-full border border-sky-200 bg-sky-50 px-2.5 py-0.5 text-xs font-medium text-sky-700">
+                      Exposed (0.0.0.0:{inst.httpPort} -&gt; 8069)
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+                      Domain Only (Port Disabled)
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-xs text-slate-500">
+                  Disabling the direct HTTP port recreates the container without publishing port <code className="bg-slate-100 px-1 rounded">0.0.0.0:{inst.httpPort}</code>, so Odoo is only accessible via configured domain(s) through Nginx.
+                </p>
+                {!hasDomain && inst.exposePort && (
+                  <p className="mt-1.5 text-xs text-amber-700">
+                    Tip: Connect a domain below before disabling the direct port so Odoo remains reachable.
+                  </p>
+                )}
+              </div>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => handleToggleExposePort(!inst.exposePort)}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-semibold disabled:opacity-60 cursor-pointer ${
+                  inst.exposePort
+                    ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                    : 'border-sky-300 bg-sky-50 text-sky-800 hover:bg-sky-100'
+                }`}
+              >
+                {busyAction === 'toggle-port' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {inst.exposePort ? 'Disable Direct Port (Domain Only)' : `Enable Direct Port (:${inst.httpPort})`}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-5">
           <div>
             <h3 className="text-sm font-semibold text-slate-900">Custom Domains &amp; Let's Encrypt SSL</h3>
             <p className="text-xs text-slate-500">
@@ -674,6 +762,7 @@ export function InstanceDetail({
                 )
               })
             )}
+          </div>
           </div>
         </div>
       )}

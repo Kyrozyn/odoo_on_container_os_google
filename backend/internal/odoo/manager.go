@@ -285,6 +285,7 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 	}
 
 	var updated models.OdooInstance
+	portChanged := false
 	err := m.store.Update(func(s *models.State) error {
 		for i := range s.Instances {
 			if s.Instances[i].ID == idOrName || s.Instances[i].Name == idOrName {
@@ -293,9 +294,15 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 					inst.Image = strings.TrimSpace(*req.Image)
 				}
 				if req.ExposePort != nil {
+					if inst.ExposePort != *req.ExposePort {
+						portChanged = true
+					}
 					inst.ExposePort = *req.ExposePort
 				}
 				if req.HTTPPort != nil && *req.HTTPPort > 0 {
+					if inst.HTTPPort != *req.HTTPPort {
+						portChanged = true
+					}
 					inst.HTTPPort = *req.HTTPPort
 				}
 				if req.UseRootSubdomain != nil {
@@ -366,7 +373,7 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 	if err := m.writeInstanceFiles(updated); err != nil {
 		return nil, err
 	}
-	if req.Redeploy {
+	if req.Redeploy || portChanged {
 		shouldUpdateApps := req.AddonRepoIDs != nil || req.RecommendedAddons != nil
 		m.tracker.Start(updated.ID, fmt.Sprintf("Redeploying %s...", updated.Name))
 		go func(inst models.OdooInstance) {

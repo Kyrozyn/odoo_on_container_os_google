@@ -268,7 +268,7 @@ export function Dashboard({
                     </span>
                   </div>
                   <p className="mt-0.5 text-xs text-slate-500">
-                    {inst.primaryUrl || `Port ${inst.httpPort}`} &bull; Image: {inst.image}
+                    {inst.primaryUrl || (inst.exposePort ? `Port ${inst.httpPort}` : 'Domain only')} &bull; Image: {inst.image}
                   </p>
                 </div>
                 <StatusBadge status={inst.status} />
