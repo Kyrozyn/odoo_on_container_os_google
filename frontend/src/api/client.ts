@@ -114,7 +114,16 @@ export const api = {
   cleanMissingModules: (id: string) =>
     request<{
       ok: boolean
-      results: { dbName: string; removed: string[]; skippedInstalled: string[] }[]
+      results: {
+        dbName: string
+        status: string
+        message?: string
+        totalOnDisk: number
+        totalInDb: number
+        detectedMissing: string[]
+        removed: string[]
+        skippedInstalled: string[]
+      }[]
       output: string
     }>(`/api/instances/${id}/clean-missing-modules`, {
       method: 'POST',

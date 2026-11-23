@@ -92,7 +92,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex bg-slate-50">
-      {/* CapRover-style Dark Sidebar */}
+      {/* Dark Sidebar */}
       <aside className="w-60 shrink-0 bg-slate-900 text-slate-300 flex flex-col justify-between">
         <div>
           <div className="flex items-center gap-2.5 px-5 py-5 border-b border-slate-800">

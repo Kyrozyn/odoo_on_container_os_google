@@ -535,6 +535,11 @@ PYEOF`, db.Name, pyRemovedList)
 // CleanMissingModulesResult reports missing module cleanup results for a single Odoo database.
 type CleanMissingModulesResult struct {
 	DBName           string   `json:"dbName"`
+	Status           string   `json:"status"` // "ok" or "skipped"
+	Message          string   `json:"message,omitempty"`
+	TotalOnDisk      int      `json:"totalOnDisk"`
+	TotalInDB        int      `json:"totalInDb"`
+	DetectedMissing  []string `json:"detectedMissing"`
 	Removed          []string `json:"removed"`
 	SkippedInstalled []string `json:"skippedInstalled"`
 }
@@ -578,22 +583,40 @@ all_mods = env['ir.module.module'].search([])
 missing = all_mods.filtered(lambda m: m.name not in existing)
 to_remove = missing.filtered(lambda m: m.state in ('uninstalled', 'uninstallable'))
 skipped = missing.filtered(lambda m: m.state not in ('uninstalled', 'uninstallable'))
+missing_names = sorted(missing.mapped('name'))
 removed_names = sorted(to_remove.mapped('name'))
 skipped_names = sorted(skipped.mapped('name'))
 if to_remove:
     to_remove.unlink()
     env.cr.commit()
-print("RUNODOO_CLEAN_MISSING_OK:" + json.dumps({"removed": removed_names, "skippedInstalled": skipped_names}))
+print("RUNODOO_CLEAN_MISSING_OK:" + json.dumps({
+    "totalOnDisk": len(existing),
+    "totalInDb": len(all_mods),
+    "detectedMissing": missing_names,
+    "removed": removed_names,
+    "skippedInstalled": skipped_names,
+}))
 PYEOF`, db.Name)
 
 		out, code, execErr := m.docker.Exec(ctx, inst.ContainerName, []string{"sh", "-c", script}, nil)
 		allOut.WriteString(fmt.Sprintf("--- %s ---\n%s\n", db.Name, out))
 		if execErr != nil || code != 0 {
+			results = append(results, CleanMissingModulesResult{
+				DBName:           db.Name,
+				Status:           "skipped",
+				Message:          "Skipped (bukan database Odoo terinisialisasi atau gagal mengakses odoo shell)",
+				DetectedMissing:  []string{},
+				Removed:          []string{},
+				SkippedInstalled: []string{},
+			})
 			continue
 		}
 
 		const prefix = "RUNODOO_CLEAN_MISSING_OK:"
 		var parsed struct {
+			TotalOnDisk      int      `json:"totalOnDisk"`
+			TotalInDB        int      `json:"totalInDb"`
+			DetectedMissing  []string `json:"detectedMissing"`
 			Removed          []string `json:"removed"`
 			SkippedInstalled []string `json:"skippedInstalled"`
 		}
@@ -609,7 +632,18 @@ PYEOF`, db.Name)
 			}
 		}
 		if !found {
+			results = append(results, CleanMissingModulesResult{
+				DBName:           db.Name,
+				Status:           "skipped",
+				Message:          "Skipped (bukan database Odoo terinisialisasi atau output tidak terbaca)",
+				DetectedMissing:  []string{},
+				Removed:          []string{},
+				SkippedInstalled: []string{},
+			})
 			continue
+		}
+		if parsed.DetectedMissing == nil {
+			parsed.DetectedMissing = []string{}
 		}
 		if parsed.Removed == nil {
 			parsed.Removed = []string{}
@@ -619,6 +653,10 @@ PYEOF`, db.Name)
 		}
 		results = append(results, CleanMissingModulesResult{
 			DBName:           db.Name,
+			Status:           "ok",
+			TotalOnDisk:      parsed.TotalOnDisk,
+			TotalInDB:        parsed.TotalInDB,
+			DetectedMissing:  parsed.DetectedMissing,
 			Removed:          parsed.Removed,
 			SkippedInstalled: parsed.SkippedInstalled,
 		})

@@ -164,7 +164,7 @@ type SharedPostgresConfig struct {
 	Port          int    `json:"port"`
 }
 
-// PanelSettings stores CapRover-like root domain, SSL, and auth configuration.
+// PanelSettings stores root domain, SSL, and auth configuration.
 type PanelSettings struct {
 	RootDomain        string `json:"rootDomain"`       // e.g., "runodoo.example.com" -> panel at panel.runodoo.example.com
 	PanelSubdomain    string `json:"panelSubdomain"`   // default: "panel"

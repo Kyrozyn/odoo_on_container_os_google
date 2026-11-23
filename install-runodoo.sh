@@ -2,7 +2,7 @@
 set -e
 
 # ==========================================================
-# RunOdoo Installer — CapRover-inspired PaaS for Odoo 17-20
+# RunOdoo Installer — Self-Hosted PaaS for Odoo 17-20
 # Supports Google Container-Optimized OS (COS) & Standard Linux
 # ==========================================================
 
@@ -136,5 +136,5 @@ echo " Password  : ${DEFAULT_PASS}"
 echo ""
 echo " Tip: Login to the panel, change your password,"
 echo " and optionally configure a Root Domain + HTTPS"
-echo " in Dashboard / Settings (just like CapRover!)."
+echo " in Dashboard / Settings."
 echo "=========================================="

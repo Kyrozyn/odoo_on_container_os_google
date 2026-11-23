@@ -160,13 +160,13 @@ export function Dashboard({
         </div>
       </div>
 
-      {/* CapRover-style Root Domain Configuration Card */}
+      {/* Root Domain Configuration Card */}
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
               <Globe className="h-5 w-5 text-[#714B67]" />
-              Root Domain Configuration (CapRover Style)
+              Root Domain Configuration
             </h2>
             <p className="mt-1 text-sm text-slate-500">
               Point a wildcard DNS A-record <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">*.yourdomain.com</code> to

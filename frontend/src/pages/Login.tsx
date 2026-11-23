@@ -31,7 +31,7 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
           </div>
           <h1 className="text-2xl font-bold text-slate-900">RunOdoo</h1>
           <p className="mt-1 text-sm text-slate-500">
-            CapRover-inspired PaaS Control Panel for Odoo 17–20
+            PaaS Control Panel for Odoo 17–20
           </p>
         </div>
 

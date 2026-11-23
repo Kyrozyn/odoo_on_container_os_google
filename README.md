@@ -1,6 +1,6 @@
-# RunOdoo — CapRover-Inspired PaaS Control Panel for Odoo
+# RunOdoo — PaaS Control Panel for Odoo
 
-**RunOdoo** adalah control panel self-hosted bergaya **CapRover** yang dirancang khusus untuk mengelola **Odoo Community (17, 18, 19, 20)**, database PostgreSQL, custom addons, reverse proxy Nginx + SSL Let's Encrypt, container Docker, serta backup & restore — semuanya dari satu dashboard web di **port 3000** atau **custom domain**.
+**RunOdoo** adalah control panel self-hosted yang dirancang khusus untuk mengelola **Odoo Community (17, 18, 19, 20)**, database PostgreSQL, custom addons, reverse proxy Nginx + SSL Let's Encrypt, container Docker, serta backup & restore — semuanya dari satu dashboard web di **port 3000** atau **custom domain**.
 
 Dibangun dengan **Go** (single binary super ringan & hemat RAM, ideal untuk VPS kecil / Google Cloud `e2-micro` / Google Container-Optimized OS) + **React (Vite + Tailwind CSS)**.
 
@@ -12,7 +12,7 @@ Dibangun dengan **Go** (single binary super ringan & hemat RAM, ideal untuk VPS 
   - Install banyak instance Odoo sekaligus (`odoo:17.0`, `odoo:18.0`, `odoo:19.0`, `odoo:20.0`, atau custom Docker image).
   - Auto-tuning `workers`, `limit_memory_soft/hard`, dan `limit_time_cpu/real = 36000` berdasarkan spesifikasi CPU & RAM server.
   - Editor `odoo.conf` dan lihat konfigurasi yang di-generate secara live.
-- **Port 3000 & Custom Domain + HTTPS (CapRover Style)**
+- **Port 3000 & Custom Domain + HTTPS**
   - Langsung bisa diakses di `http://<IP-SERVER>:3000` tanpa perlu setup domain terlebih dahulu.
   - Dukungan **Root Domain** (`*.yourdomain.com` -> panel di `panel.yourdomain.com`, app di `<app>.yourdomain.com`) dan **Custom Domain** per instance Odoo.
   - Reverse proxy **Nginx** otomatis dengan konfigurasi khusus Odoo (`/websocket`, `/longpolling`, `client_max_body_size 512m`) + **1-klik SSL Let's Encrypt (Certbot)**.
