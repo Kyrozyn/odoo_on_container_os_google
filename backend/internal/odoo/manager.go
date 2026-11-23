@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -529,6 +530,101 @@ PYEOF`, db.Name, pyRemovedList)
 		updated = []string{}
 	}
 	return updated, allOut.String(), nil
+}
+
+// CleanMissingModulesResult reports missing module cleanup results for a single Odoo database.
+type CleanMissingModulesResult struct {
+	DBName           string   `json:"dbName"`
+	Removed          []string `json:"removed"`
+	SkippedInstalled []string `json:"skippedInstalled"`
+}
+
+// CleanMissingModules checks every ir.module.module record against modules present on disk (addons_path)
+// and unlinks missing uninstalled/uninstallable records so they no longer appear in Odoo's Apps List.
+func (m *Manager) CleanMissingModules(ctx context.Context, idOrName string) ([]CleanMissingModulesResult, string, error) {
+	inst, ok := m.store.FindInstance(idOrName)
+	if !ok {
+		return nil, "", fmt.Errorf("instance not found")
+	}
+
+	dbs, err := m.db.ListInstanceDatabases(ctx, inst)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed listing databases: %w", err)
+	}
+	if len(dbs) == 0 {
+		return []CleanMissingModulesResult{}, "No databases found on this instance", nil
+	}
+
+	results := make([]CleanMissingModulesResult, 0, len(dbs))
+	var allOut strings.Builder
+	for _, db := range dbs {
+		script := fmt.Sprintf(`odoo shell -c /etc/odoo/odoo.conf -d %q --no-http <<'PYEOF'
+import json, os
+from odoo.tools import config as odoo_config
+
+try:
+    from odoo.modules.module import get_modules
+    existing = set(get_modules())
+except Exception:
+    existing = set()
+    for p in (odoo_config.get('addons_path') or '').split(','):
+        p = p.strip()
+        if p and os.path.isdir(p):
+            for entry in os.listdir(p):
+                if os.path.isfile(os.path.join(p, entry, '__manifest__.py')):
+                    existing.add(entry)
+
+all_mods = env['ir.module.module'].search([])
+missing = all_mods.filtered(lambda m: m.name not in existing)
+to_remove = missing.filtered(lambda m: m.state in ('uninstalled', 'uninstallable'))
+skipped = missing.filtered(lambda m: m.state not in ('uninstalled', 'uninstallable'))
+removed_names = sorted(to_remove.mapped('name'))
+skipped_names = sorted(skipped.mapped('name'))
+if to_remove:
+    to_remove.unlink()
+    env.cr.commit()
+print("RUNODOO_CLEAN_MISSING_OK:" + json.dumps({"removed": removed_names, "skippedInstalled": skipped_names}))
+PYEOF`, db.Name)
+
+		out, code, execErr := m.docker.Exec(ctx, inst.ContainerName, []string{"sh", "-c", script}, nil)
+		allOut.WriteString(fmt.Sprintf("--- %s ---\n%s\n", db.Name, out))
+		if execErr != nil || code != 0 {
+			continue
+		}
+
+		const prefix = "RUNODOO_CLEAN_MISSING_OK:"
+		var parsed struct {
+			Removed          []string `json:"removed"`
+			SkippedInstalled []string `json:"skippedInstalled"`
+		}
+		found := false
+		for _, line := range strings.Split(out, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, prefix) {
+				payload := strings.TrimPrefix(line, prefix)
+				if err := json.Unmarshal([]byte(payload), &parsed); err == nil {
+					found = true
+				}
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		if parsed.Removed == nil {
+			parsed.Removed = []string{}
+		}
+		if parsed.SkippedInstalled == nil {
+			parsed.SkippedInstalled = []string{}
+		}
+		results = append(results, CleanMissingModulesResult{
+			DBName:           db.Name,
+			Removed:          parsed.Removed,
+			SkippedInstalled: parsed.SkippedInstalled,
+		})
+	}
+
+	return results, allOut.String(), nil
 }
 
 // computeRemovedModules returns technical module names belonging to addon repos or recommended addons

@@ -111,6 +111,14 @@ export const api = {
     request<{ ok: boolean; updated: string[]; output: string }>(`/api/instances/${id}/update-apps-list`, {
       method: 'POST',
     }),
+  cleanMissingModules: (id: string) =>
+    request<{
+      ok: boolean
+      results: { dbName: string; removed: string[]; skippedInstalled: string[] }[]
+      output: string
+    }>(`/api/instances/${id}/clean-missing-modules`, {
+      method: 'POST',
+    }),
   upgradeModules: (id: string, dbName: string, modules: string[]) =>
     request<{ ok: boolean; output: string }>(`/api/instances/${id}/upgrade-modules`, {
       method: 'POST',

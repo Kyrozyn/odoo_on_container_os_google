@@ -100,6 +100,7 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("GET /api/instances/{id}/conf", s.handleInstanceConf)
 	protected.HandleFunc("POST /api/instances/{id}/ssl", s.handleInstanceSSL)
 	protected.HandleFunc("POST /api/instances/{id}/update-apps-list", s.handleUpdateAppsList)
+	protected.HandleFunc("POST /api/instances/{id}/clean-missing-modules", s.handleCleanMissingModules)
 	protected.HandleFunc("POST /api/instances/{id}/upgrade-modules", s.handleUpgradeModules)
 
 	// Databases
@@ -527,6 +528,15 @@ func (s *Server) handleUpdateAppsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "updated": updated, "output": out})
+}
+
+func (s *Server) handleCleanMissingModules(w http.ResponseWriter, r *http.Request) {
+	results, out, err := s.odoo.CleanMissingModules(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "output": out})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "results": results, "output": out})
 }
 
 func (s *Server) handleUpgradeModules(w http.ResponseWriter, r *http.Request) {

@@ -932,33 +932,80 @@ export function InstanceDetail({
                   Attach/Detach otomatis me-redeploy container dan menjalankan <strong>Update Apps List</strong> di semua database Odoo.
                 </p>
               </div>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={async () => {
-                  setBusyAction('update-apps-list')
-                  try {
-                    const res = await api.updateAppsList(inst.id)
-                    if (res.updated && res.updated.length > 0) {
-                      notify(`Apps List updated on: ${res.updated.join(', ')}`)
-                    } else {
-                      notify('No initialized Odoo databases found to update.')
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusyAction('clean-missing-modules')
+                    try {
+                      const res = await api.cleanMissingModules(inst.id)
+                      const results = Array.isArray(res.results) ? res.results : []
+                      if (results.length === 0) {
+                        notify('No initialized Odoo databases found to check.')
+                        return
+                      }
+                      const totalRemoved = results.reduce((sum, r) => sum + (r.removed?.length || 0), 0)
+                      const totalSkipped = results.reduce((sum, r) => sum + (r.skippedInstalled?.length || 0), 0)
+                      if (totalRemoved > 0) {
+                        const summary = results
+                          .filter((r) => (r.removed?.length || 0) > 0)
+                          .map((r) => `${r.dbName}: ${r.removed.join(', ')}`)
+                          .join(' | ')
+                        const skipNote = totalSkipped > 0 ? ` (${totalSkipped} masih installed, di-skip)` : ''
+                        notify(`Dihapus ${totalRemoved} modul yang hilang dari Apps List — ${summary}${skipNote}`)
+                      } else if (totalSkipped > 0) {
+                        notify(
+                          `Ada ${totalSkipped} modul hilang yang masih berstatus installed. Silakan uninstall di Odoo terlebih dahulu.`,
+                          'error'
+                        )
+                      } else {
+                        notify('Semua modul di Apps List masih ada di disk (tidak ada record yang dihapus).')
+                      }
+                    } catch (err) {
+                      notify(err instanceof Error ? err.message : 'Clean Missing Apps failed', 'error')
+                    } finally {
+                      setBusyAction(null)
                     }
-                  } catch (err) {
-                    notify(err instanceof Error ? err.message : 'Update Apps List failed', 'error')
-                  } finally {
-                    setBusyAction(null)
-                  }
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
-              >
-                {busyAction === 'update-apps-list' ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-[#714B67]" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5 text-[#714B67]" />
-                )}
-                {busyAction === 'update-apps-list' ? 'Updating Apps List...' : 'Update Apps List'}
-              </button>
+                  }}
+                  title="Cek modul di disk dan hapus record modul yang sudah tidak ada dari Apps List Odoo"
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60 cursor-pointer"
+                >
+                  {busyAction === 'clean-missing-modules' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3.5 w-3.5" />
+                  )}
+                  {busyAction === 'clean-missing-modules' ? 'Cleaning...' : 'Clean Missing Apps'}
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusyAction('update-apps-list')
+                    try {
+                      const res = await api.updateAppsList(inst.id)
+                      if (res.updated && res.updated.length > 0) {
+                        notify(`Apps List updated on: ${res.updated.join(', ')}`)
+                      } else {
+                        notify('No initialized Odoo databases found to update.')
+                      }
+                    } catch (err) {
+                      notify(err instanceof Error ? err.message : 'Update Apps List failed', 'error')
+                    } finally {
+                      setBusyAction(null)
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+                >
+                  {busyAction === 'update-apps-list' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#714B67]" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5 text-[#714B67]" />
+                  )}
+                  {busyAction === 'update-apps-list' ? 'Updating Apps List...' : 'Update Apps List'}
+                </button>
+              </div>
             </div>
             {allAddons.length === 0 ? (
               <p className="text-xs text-slate-500">No addon repositories in library yet. Add Git repos or upload ZIPs in the Addons page.</p>

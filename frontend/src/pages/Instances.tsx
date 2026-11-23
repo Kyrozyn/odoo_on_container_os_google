@@ -28,7 +28,6 @@ export function Instances({
   const [version, setVersion] = useState<OdooVersion>('18')
   const [customImage, setCustomImage] = useState('')
   const [dbMode, setDbMode] = useState<DBMode>('shared')
-  const [defaultDbName, setDefaultDbName] = useState('')
   const [adminPassword, setAdminPassword] = useState('')
   const [exposePort, setExposePort] = useState(true)
   const [httpPort, setHttpPort] = useState('')
@@ -70,7 +69,6 @@ export function Instances({
         version,
         customImage: customImage || undefined,
         dbMode,
-        defaultDbName: defaultDbName || undefined,
         adminPassword: adminPassword || undefined,
         exposePort,
         httpPort: httpPort ? parseInt(httpPort, 10) : 0,
@@ -83,7 +81,6 @@ export function Instances({
       setShowCreate(false)
       setName('')
       setCustomImage('')
-      setDefaultDbName('')
       setAdminPassword('')
       setCustomDomain('')
       setSelectedAddons([])
@@ -367,27 +364,15 @@ export function Instances({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-700">Initial Database Name (optional)</label>
-              <input
-                type="text"
-                value={defaultDbName}
-                onChange={(e) => setDefaultDbName(e.target.value)}
-                placeholder="e.g. mycompany_db"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[#714B67] focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-700">Master Admin Password (optional)</label>
-              <input
-                type="text"
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-                placeholder="Auto-generated if empty"
-                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[#714B67] focus:outline-none"
-              />
-            </div>
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-700">Master Admin Password (optional)</label>
+            <input
+              type="text"
+              value={adminPassword}
+              onChange={(e) => setAdminPassword(e.target.value)}
+              placeholder="Auto-generated if empty"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[#714B67] focus:outline-none"
+            />
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-3">
