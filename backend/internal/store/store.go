@@ -2,6 +2,7 @@ package store
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,14 +46,15 @@ func New(filePath, defaultPassword, sharedPGContainer string) (*Store, error) {
 	}
 	s.state = models.State{
 		Settings: models.PanelSettings{
-			RootDomain:       ps.Settings.RootDomain,
-			PanelSubdomain:   ps.Settings.PanelSubdomain,
-			PanelHasSSL:      ps.Settings.PanelHasSSL,
-			PanelForceHTTPS:  ps.Settings.PanelForceHTTPS,
-			LetsEncryptEmail: ps.Settings.LetsEncryptEmail,
-			PasswordHash:     ps.Settings.PasswordHash,
-			PasswordChanged:  ps.Settings.PasswordChanged,
-			JWTSecret:        ps.Settings.JWTSecret,
+			RootDomain:        ps.Settings.RootDomain,
+			PanelSubdomain:    ps.Settings.PanelSubdomain,
+			PanelHasSSL:       ps.Settings.PanelHasSSL,
+			PanelForceHTTPS:   ps.Settings.PanelForceHTTPS,
+			DisableDirectPort: ps.Settings.DisableDirectPort,
+			LetsEncryptEmail:  ps.Settings.LetsEncryptEmail,
+			PasswordHash:      ps.Settings.PasswordHash,
+			PasswordChanged:   ps.Settings.PasswordChanged,
+			JWTSecret:         ps.Settings.JWTSecret,
 		},
 		SharedPostgres:  ps.SharedPostgres,
 		Instances:       ps.Instances,
@@ -202,14 +204,15 @@ func (s *Store) NextAvailablePort(startPort int) int {
 
 // persistedState mirrors models.State but includes private auth fields for disk serialization.
 type persistedSettings struct {
-	RootDomain       string `json:"rootDomain"`
-	PanelSubdomain   string `json:"panelSubdomain"`
-	PanelHasSSL      bool   `json:"panelHasSsl"`
-	PanelForceHTTPS  bool   `json:"panelForceHttps"`
-	LetsEncryptEmail string `json:"letsEncryptEmail"`
-	PasswordHash     string `json:"passwordHash"`
-	PasswordChanged  bool   `json:"passwordChanged"`
-	JWTSecret        string `json:"jwtSecret"`
+	RootDomain        string `json:"rootDomain"`
+	PanelSubdomain    string `json:"panelSubdomain"`
+	PanelHasSSL       bool   `json:"panelHasSsl"`
+	PanelForceHTTPS   bool   `json:"panelForceHttps"`
+	DisableDirectPort bool   `json:"disableDirectPort"`
+	LetsEncryptEmail  string `json:"letsEncryptEmail"`
+	PasswordHash      string `json:"passwordHash"`
+	PasswordChanged   bool   `json:"passwordChanged"`
+	JWTSecret         string `json:"jwtSecret"`
 }
 
 type persistedState struct {
@@ -224,14 +227,15 @@ type persistedState struct {
 func (s *Store) saveLocked() error {
 	ps := persistedState{
 		Settings: persistedSettings{
-			RootDomain:       s.state.Settings.RootDomain,
-			PanelSubdomain:   s.state.Settings.PanelSubdomain,
-			PanelHasSSL:      s.state.Settings.PanelHasSSL,
-			PanelForceHTTPS:  s.state.Settings.PanelForceHTTPS,
-			LetsEncryptEmail: s.state.Settings.LetsEncryptEmail,
-			PasswordHash:     s.state.Settings.PasswordHash,
-			PasswordChanged:  s.state.Settings.PasswordChanged,
-			JWTSecret:        s.state.Settings.JWTSecret,
+			RootDomain:        s.state.Settings.RootDomain,
+			PanelSubdomain:    s.state.Settings.PanelSubdomain,
+			PanelHasSSL:       s.state.Settings.PanelHasSSL,
+			PanelForceHTTPS:   s.state.Settings.PanelForceHTTPS,
+			DisableDirectPort: s.state.Settings.DisableDirectPort,
+			LetsEncryptEmail:  s.state.Settings.LetsEncryptEmail,
+			PasswordHash:      s.state.Settings.PasswordHash,
+			PasswordChanged:   s.state.Settings.PasswordChanged,
+			JWTSecret:         s.state.Settings.JWTSecret,
 		},
 		SharedPostgres:  s.state.SharedPostgres,
 		Instances:       s.state.Instances,
@@ -254,6 +258,16 @@ func (s *Store) saveLocked() error {
 
 // UnmarshalJSON for loading persistedState cleanly on startup.
 func init() {}
+
+// ProxyToken returns a deterministic internal secret derived from JWTSecret
+// used by managed Nginx to authenticate proxied requests to the control panel.
+func (s *Store) ProxyToken() string {
+	s.mu.RLock()
+	secret := s.state.Settings.JWTSecret
+	s.mu.RUnlock()
+	sum := sha256.Sum256([]byte("runodoo-proxy:" + secret))
+	return hex.EncodeToString(sum[:])
+}
 
 func randomHex(n int) string {
 	b := make([]byte, n)

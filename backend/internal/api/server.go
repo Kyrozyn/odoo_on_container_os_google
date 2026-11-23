@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -140,7 +142,7 @@ func (s *Server) Routes() http.Handler {
 	// Static SPA frontend
 	mux.Handle("/", s.spaHandler())
 
-	return withCORS(mux)
+	return s.withPanelAccessControl(withCORS(mux))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -219,28 +221,36 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	st := s.store.Get()
-	writeJSON(w, http.StatusOK, st.Settings)
+	settings := st.Settings
+	if panelDomain := proxy.PanelDomain(settings.RootDomain, settings.PanelSubdomain); panelDomain != "" {
+		settings.PanelHasSSL = s.proxy.CertExists(panelDomain)
+	} else {
+		settings.PanelHasSSL = false
+	}
+	writeJSON(w, http.StatusOK, settings)
 }
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RootDomain       *string `json:"rootDomain"`
-		PanelSubdomain   *string `json:"panelSubdomain"`
-		LetsEncryptEmail *string `json:"letsEncryptEmail"`
-		PanelForceHTTPS  *bool   `json:"panelForceHttps"`
+		RootDomain        *string `json:"rootDomain"`
+		PanelSubdomain    *string `json:"panelSubdomain"`
+		LetsEncryptEmail  *string `json:"letsEncryptEmail"`
+		PanelForceHTTPS   *bool   `json:"panelForceHttps"`
+		DisableDirectPort *bool   `json:"disableDirectPort"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
+	prev := s.store.Get().Settings
 	var updated models.PanelSettings
 	err := s.store.Update(func(st *models.State) error {
 		if body.RootDomain != nil {
-			st.Settings.RootDomain = strings.TrimSpace(strings.ToLower(*body.RootDomain))
+			st.Settings.RootDomain = proxy.NormalizeDomain(*body.RootDomain)
 		}
 		if body.PanelSubdomain != nil {
-			sub := strings.TrimSpace(strings.ToLower(*body.PanelSubdomain))
+			sub := strings.Trim(strings.TrimSpace(strings.ToLower(*body.PanelSubdomain)), ".")
 			if sub == "" {
 				sub = "panel"
 			}
@@ -252,27 +262,54 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		if body.PanelForceHTTPS != nil {
 			st.Settings.PanelForceHTTPS = *body.PanelForceHTTPS
 		}
+		if body.DisableDirectPort != nil {
+			st.Settings.DisableDirectPort = *body.DisableDirectPort
+		}
+
+		if st.Settings.RootDomain == "" {
+			if body.DisableDirectPort != nil && *body.DisableDirectPort {
+				return fmt.Errorf("configure a Root Domain before disabling direct port access")
+			}
+			st.Settings.DisableDirectPort = false
+			st.Settings.PanelHasSSL = false
+		} else {
+			panelDomain := proxy.PanelDomain(st.Settings.RootDomain, st.Settings.PanelSubdomain)
+			st.Settings.PanelHasSSL = s.proxy.CertExists(panelDomain)
+		}
+
 		updated = st.Settings
 		return nil
 	})
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	_ = s.proxy.SyncAll(r.Context())
+	var syncErr error
+	if updated.DisableDirectPort {
+		syncErr = s.proxy.EnsureNginx(r.Context())
+	} else {
+		syncErr = s.proxy.SyncAll(r.Context())
+	}
+	if syncErr != nil {
+		if updated.DisableDirectPort && !prev.DisableDirectPort {
+			_ = s.store.Update(func(st *models.State) error {
+				st.Settings.DisableDirectPort = false
+				return nil
+			})
+		}
+		writeErr(w, http.StatusInternalServerError, "settings updated, but failed to reload Nginx: "+syncErr.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleEnablePanelSSL(w http.ResponseWriter, r *http.Request) {
 	st := s.store.Get()
-	if st.Settings.RootDomain == "" {
+	panelDomain := proxy.PanelDomain(st.Settings.RootDomain, st.Settings.PanelSubdomain)
+	if panelDomain == "" {
 		writeErr(w, http.StatusBadRequest, "set a Root Domain first before enabling SSL")
 		return
-	}
-	panelDomain := st.Settings.PanelSubdomain + "." + st.Settings.RootDomain
-	if st.Settings.PanelSubdomain == "" || st.Settings.PanelSubdomain == "@" {
-		panelDomain = st.Settings.RootDomain
 	}
 
 	logs, err := s.proxy.IssueSSL(r.Context(), panelDomain, st.Settings.LetsEncryptEmail)
@@ -284,7 +321,10 @@ func (s *Server) handleEnablePanelSSL(w http.ResponseWriter, r *http.Request) {
 		s.Settings.PanelHasSSL = true
 		return nil
 	})
-	_ = s.proxy.SyncAll(r.Context())
+	if err := s.proxy.SyncAll(r.Context()); err != nil {
+		writeErr(w, http.StatusInternalServerError, "SSL issued, but failed to reload Nginx: "+err.Error())
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "domain": panelDomain, "logs": logs})
 }
 
@@ -979,6 +1019,53 @@ func (s *Server) spaHandler() http.Handler {
 			return
 		}
 		http.ServeFile(w, r, indexFile)
+	})
+}
+
+func hostWithoutPort(host string) string {
+	h := strings.TrimSpace(strings.ToLower(host))
+	if parsed, _, err := net.SplitHostPort(h); err == nil {
+		return parsed
+	}
+	return h
+}
+
+func (s *Server) withPanelAccessControl(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		st := s.store.Get()
+		panelDomain := proxy.PanelDomain(st.Settings.RootDomain, st.Settings.PanelSubdomain)
+		if panelDomain == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		viaProxy := subtle.ConstantTimeCompare([]byte(r.Header.Get("X-RunOdoo-Proxy")), []byte(s.store.ProxyToken())) == 1
+		isPanelHost := strings.EqualFold(hostWithoutPort(r.Host), panelDomain)
+
+		if st.Settings.DisableDirectPort && !(viaProxy && isPanelHost) {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				writeErr(w, http.StatusForbidden, "Direct port access is disabled. Please access RunOdoo via your configured Panel Domain.")
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<!doctype html><html><body style="font-family:sans-serif;padding:2rem"><h2>Direct Port Access Disabled</h2><p>Direct access via port 3000 is disabled. Please access RunOdoo via your configured Panel Domain.</p></body></html>`))
+			return
+		}
+
+		if st.Settings.PanelForceHTTPS && viaProxy && isPanelHost && s.proxy.CertExists(panelDomain) {
+			if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "http") {
+				http.Redirect(w, r, "https://"+panelDomain+r.URL.RequestURI(), http.StatusMovedPermanently)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
 	})
 }
 

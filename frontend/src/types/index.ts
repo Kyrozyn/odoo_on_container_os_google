@@ -119,6 +119,7 @@ export interface PanelSettings {
   panelSubdomain: string
   panelHasSsl: boolean
   panelForceHttps: boolean
+  disableDirectPort: boolean
   letsEncryptEmail: string
   passwordChanged: boolean
 }

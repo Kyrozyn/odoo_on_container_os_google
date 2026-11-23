@@ -166,14 +166,15 @@ type SharedPostgresConfig struct {
 
 // PanelSettings stores CapRover-like root domain, SSL, and auth configuration.
 type PanelSettings struct {
-	RootDomain       string `json:"rootDomain"`       // e.g., "runodoo.example.com" -> panel at panel.runodoo.example.com
-	PanelSubdomain   string `json:"panelSubdomain"`   // default: "panel"
-	PanelHasSSL      bool   `json:"panelHasSsl"`
-	PanelForceHTTPS  bool   `json:"panelForceHttps"`
-	LetsEncryptEmail string `json:"letsEncryptEmail"`
-	PasswordHash     string `json:"-"`                // never exposed in API JSON
-	PasswordChanged  bool   `json:"passwordChanged"`
-	JWTSecret        string `json:"-"`
+	RootDomain        string `json:"rootDomain"`       // e.g., "runodoo.example.com" -> panel at panel.runodoo.example.com
+	PanelSubdomain    string `json:"panelSubdomain"`   // default: "panel"
+	PanelHasSSL       bool   `json:"panelHasSsl"`
+	PanelForceHTTPS   bool   `json:"panelForceHttps"`
+	DisableDirectPort bool   `json:"disableDirectPort"`
+	LetsEncryptEmail  string `json:"letsEncryptEmail"`
+	PasswordHash      string `json:"-"`                // never exposed in API JSON
+	PasswordChanged   bool   `json:"passwordChanged"`
+	JWTSecret         string `json:"-"`
 }
 
 // State is the root persistent JSON document.

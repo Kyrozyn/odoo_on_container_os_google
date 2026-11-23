@@ -31,8 +31,12 @@ func (m *Manager) EnsureNginx(ctx context.Context) error {
 	if err := m.writeConfigs(); err != nil {
 		return err
 	}
-	if err := m.ensureNginxContainer(ctx); err != nil {
+	started, err := m.ensureNginxContainer(ctx)
+	if err != nil {
 		return err
+	}
+	if started {
+		return nil
 	}
 	return m.ReloadNginx(ctx)
 }
@@ -45,29 +49,36 @@ func (m *Manager) SyncAll(ctx context.Context) error {
 		return err
 	}
 	if hasAnyDomain {
-		if err := m.ensureNginxContainer(ctx); err != nil {
+		started, err := m.ensureNginxContainer(ctx)
+		if err != nil {
 			return err
+		}
+		if started {
+			return nil
 		}
 	}
 	return m.ReloadNginx(ctx)
 }
 
-func (m *Manager) ensureNginxContainer(ctx context.Context) error {
+func (m *Manager) ensureNginxContainer(ctx context.Context) (bool, error) {
 	if err := m.docker.EnsureNetwork(ctx, m.cfg.DockerNetwork); err != nil {
-		return err
+		return false, err
 	}
 	insp, err := m.docker.InspectContainer(ctx, m.cfg.NginxContainer)
 	if err == nil {
 		if !insp.State.Running {
-			return m.docker.StartContainer(ctx, m.cfg.NginxContainer)
+			if err := m.docker.StartContainer(ctx, m.cfg.NginxContainer); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
-		return nil
+		return false, nil
 	}
 
 	image := "nginx:1.27-alpine"
 	if !m.docker.ImageExists(ctx, image) {
 		if err := m.docker.PullImage(ctx, image); err != nil {
-			return err
+			return false, err
 		}
 	}
 
@@ -91,9 +102,12 @@ func (m *Manager) ensureNginxContainer(ctx context.Context) error {
 		RestartPolicy: "unless-stopped",
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
-	return m.docker.StartContainer(ctx, m.cfg.NginxContainer)
+	if err := m.docker.StartContainer(ctx, m.cfg.NginxContainer); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (m *Manager) writeConfigs() error {
@@ -137,13 +151,9 @@ func (m *Manager) writeConfigsWithFlag() (bool, error) {
 	}
 
 	// 2. Panel domain config (e.g., panel.runodoo.example.com -> runodoo:3000)
-	if st.Settings.RootDomain != "" {
+	if panelHost := PanelDomain(st.Settings.RootDomain, st.Settings.PanelSubdomain); panelHost != "" {
 		hasAnyDomain = true
-		panelHost := st.Settings.PanelSubdomain + "." + st.Settings.RootDomain
-		if st.Settings.PanelSubdomain == "" || st.Settings.PanelSubdomain == "@" {
-			panelHost = st.Settings.RootDomain
-		}
-		panelConf := m.renderPanelVhost(panelHost, st.Settings.PanelHasSSL, st.Settings.PanelForceHTTPS)
+		panelConf := m.renderPanelVhost(panelHost, st.Settings.PanelHasSSL, st.Settings.PanelForceHTTPS, m.store.ProxyToken())
 		if err := os.WriteFile(filepath.Join(confDir, "runodoo-01-panel.conf"), []byte(panelConf), 0o644); err != nil {
 			return false, err
 		}
@@ -247,15 +257,52 @@ func (m *Manager) IssueSSL(ctx context.Context, domain, email string) (string, e
 	return logs, nil
 }
 
-// CertExists checks whether Let's Encrypt cert files exist on disk for a domain.
-func (m *Manager) CertExists(domain string) bool {
-	certPath := filepath.Join(m.cfg.CertbotConfDir(), "live", domain, "fullchain.pem")
-	_, err := os.Stat(certPath)
-	return err == nil
+// NormalizeDomain strips scheme, path, port, and surrounding whitespace/dots from a domain string.
+func NormalizeDomain(d string) string {
+	d = strings.TrimSpace(strings.ToLower(d))
+	d = strings.TrimPrefix(d, "https://")
+	d = strings.TrimPrefix(d, "http://")
+	if idx := strings.IndexByte(d, '/'); idx != -1 {
+		d = d[:idx]
+	}
+	if idx := strings.IndexByte(d, ':'); idx != -1 {
+		d = d[:idx]
+	}
+	return strings.Trim(d, ".")
 }
 
-func (m *Manager) renderPanelVhost(domain string, hasSSL, forceHTTPS bool) string {
-	useSSL := hasSSL && m.CertExists(domain)
+// PanelDomain computes the full panel hostname from rootDomain and panelSubdomain.
+func PanelDomain(rootDomain, panelSubdomain string) string {
+	root := NormalizeDomain(rootDomain)
+	if root == "" {
+		return ""
+	}
+	sub := strings.Trim(strings.TrimSpace(strings.ToLower(panelSubdomain)), ".")
+	if sub == "" || sub == "@" {
+		return root
+	}
+	return sub + "." + root
+}
+
+// CertExists checks whether Let's Encrypt cert files exist on disk for a domain.
+func (m *Manager) CertExists(domain string) bool {
+	domain = NormalizeDomain(domain)
+	if domain == "" {
+		return false
+	}
+	fullchain := filepath.Join(m.cfg.CertbotConfDir(), "live", domain, "fullchain.pem")
+	privkey := filepath.Join(m.cfg.CertbotConfDir(), "live", domain, "privkey.pem")
+	if _, err := os.Stat(fullchain); err != nil {
+		return false
+	}
+	if _, err := os.Stat(privkey); err != nil {
+		return false
+	}
+	return true
+}
+
+func (m *Manager) renderPanelVhost(domain string, hasSSL, forceHTTPS bool, proxyToken string) string {
+	useSSL := m.CertExists(domain)
 	upstream := fmt.Sprintf("runodoo:%s", m.cfg.Port)
 
 	var sb strings.Builder
@@ -276,7 +323,15 @@ func (m *Manager) renderPanelVhost(domain string, hasSSL, forceHTTPS bool) strin
 }
 `)
 	} else {
-		sb.WriteString(fmt.Sprintf(`
+		redirectBlock := ""
+		if forceHTTPS {
+			redirectBlock = `
+    if ($http_x_forwarded_proto = "http") {
+        return 301 https://$host$request_uri;
+    }
+`
+		}
+		sb.WriteString(fmt.Sprintf(`%s
     resolver 127.0.0.11 valid=10s ipv6=off;
     set $panel_upstream http://%s;
     client_max_body_size 512m;
@@ -286,10 +341,11 @@ func (m *Manager) renderPanelVhost(domain string, hasSSL, forceHTTPS bool) strin
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-RunOdoo-Proxy %s;
         proxy_read_timeout 300s;
     }
 }
-`, upstream))
+`, redirectBlock, upstream, proxyToken))
 	}
 
 	if useSSL {
@@ -311,10 +367,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-RunOdoo-Proxy %s;
         proxy_read_timeout 300s;
     }
 }
-`, domain, domain, domain, upstream))
+`, domain, domain, domain, upstream, proxyToken))
 	}
 	return sb.String()
 }

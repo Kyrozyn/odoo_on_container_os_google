@@ -65,7 +65,8 @@ export function Dashboard({
         letsEncryptEmail: emailInput,
       })
       setSettings(updated)
-      notify('Root domain & Nginx config updated!')
+      notify('Root domain & Nginx config updated! Reloading...')
+      setTimeout(() => window.location.reload(), 600)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed updating domain', 'error')
     } finally {

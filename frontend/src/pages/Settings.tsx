@@ -3,12 +3,21 @@ import { Globe, KeyRound, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
 import { api } from '../api/client'
 import type { PanelSettings } from '../types'
 
+function computePanelDomain(root: string, sub: string): string {
+  const cleanRoot = root.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].split(':')[0].replace(/^\.+|\.+$/g, '')
+  if (!cleanRoot) return ''
+  const cleanSub = sub.trim().toLowerCase().replace(/^\.+|\.+$/g, '')
+  if (!cleanSub || cleanSub === '@') return cleanRoot
+  return `${cleanSub}.${cleanRoot}`
+}
+
 export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
   const [settings, setSettings] = useState<PanelSettings | null>(null)
   const [rootDomain, setRootDomain] = useState('')
   const [panelSubdomain, setPanelSubdomain] = useState('panel')
   const [email, setEmail] = useState('')
   const [forceHttps, setForceHttps] = useState(false)
+  const [disableDirectPort, setDisableDirectPort] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [busyAction, setBusyAction] = useState<'save' | 'ssl' | 'nginx' | 'password' | null>(null)
@@ -22,6 +31,7 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
       setPanelSubdomain(s.panelSubdomain || 'panel')
       setEmail(s.letsEncryptEmail || '')
       setForceHttps(s.panelForceHttps || false)
+      setDisableDirectPort(s.disableDirectPort || false)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading settings', 'error')
     }
@@ -30,6 +40,25 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
   useEffect(() => {
     load()
   }, [])
+
+  const reloadOrRedirect = (s: PanelSettings) => {
+    const targetDomain = computePanelDomain(s.rootDomain, s.panelSubdomain)
+    const onTargetHost = targetDomain && window.location.hostname.toLowerCase() === targetDomain.toLowerCase()
+    const onDirectPort = window.location.port !== ''
+
+    setTimeout(() => {
+      if (s.disableDirectPort && targetDomain && (!onTargetHost || onDirectPort)) {
+        const proto = s.panelHasSsl ? 'https' : 'http'
+        window.location.href = `${proto}://${targetDomain}${window.location.pathname}`
+        return
+      }
+      if (s.panelForceHttps && s.panelHasSsl && targetDomain && window.location.protocol === 'http:') {
+        window.location.href = `https://${targetDomain}${window.location.pathname}`
+        return
+      }
+      window.location.reload()
+    }, 700)
+  }
 
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -40,9 +69,12 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
         panelSubdomain,
         letsEncryptEmail: email,
         panelForceHttps: forceHttps,
+        disableDirectPort: rootDomain.trim() ? disableDirectPort : false,
       })
       setSettings(s)
-      notify('Settings saved and Nginx config synced!')
+      setDisableDirectPort(s.disableDirectPort || false)
+      notify('Settings saved and Nginx reloaded! Reloading...')
+      reloadOrRedirect(s)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed saving settings', 'error')
     } finally {
@@ -53,9 +85,21 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
   const handleEnableSsl = async () => {
     setBusyAction('ssl')
     try {
+      await api.updateSettings({
+        rootDomain,
+        panelSubdomain,
+        letsEncryptEmail: email,
+        panelForceHttps: forceHttps,
+      })
       const res = await api.enablePanelSsl()
-      notify(`HTTPS enabled for ${res.domain}!`)
-      load()
+      notify(`HTTPS enabled for ${res.domain}! Reloading...`)
+      setTimeout(() => {
+        if (forceHttps && window.location.protocol === 'http:') {
+          window.location.href = `https://${res.domain}${window.location.pathname}`
+          return
+        }
+        window.location.reload()
+      }, 700)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed enabling SSL', 'error')
     } finally {
@@ -134,10 +178,34 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
             />
           </div>
 
-          <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
-            <input type="checkbox" checked={forceHttps} onChange={(e) => setForceHttps(e.target.checked)} />
-            Force HTTPS redirect on Panel Domain
-          </label>
+          <div className="space-y-2">
+            <div>
+              <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                <input type="checkbox" checked={forceHttps} onChange={(e) => setForceHttps(e.target.checked)} />
+                Force HTTPS redirect on Panel Domain
+              </label>
+              {!settings?.panelHasSsl && (
+                <p className="ml-6 mt-0.5 text-xs text-slate-500">
+                  Requires active SSL (Enable HTTPS via Certbot) or an external HTTPS proxy (e.g. Cloudflare) to redirect HTTP to HTTPS.
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className={`inline-flex items-center gap-2 text-sm ${!rootDomain.trim() ? 'text-slate-400 cursor-not-allowed' : 'text-slate-700 cursor-pointer'}`}>
+                <input
+                  type="checkbox"
+                  checked={disableDirectPort}
+                  disabled={!rootDomain.trim()}
+                  onChange={(e) => setDisableDirectPort(e.target.checked)}
+                />
+                Disable direct port 3000 access (Panel Domain only)
+              </label>
+              <p className="ml-6 mt-0.5 text-xs text-slate-500">
+                Blocks direct access via IP:3000 and allows access only through the configured Panel Domain. Make sure your Panel Domain is reachable first.
+              </p>
+            </div>
+          </div>
 
           <div className="flex flex-wrap gap-2 pt-2">
             <button
