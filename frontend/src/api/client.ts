@@ -53,6 +53,42 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T
 }
 
+export type CleanMissingMode = 'all' | 'custom' | 'stalled'
+
+export interface StalledModuleInfo {
+  name: string
+  state: string
+  onDisk: boolean
+}
+
+export interface CleanMissingDBResult {
+  dbName: string
+  status: string
+  message?: string
+  mode?: CleanMissingMode
+  totalOnDisk: number
+  totalInDb: number
+  detectedMissing: string[]
+  removed: string[]
+  skippedInstalled: string[]
+  stalledModules: StalledModuleInfo[]
+}
+
+export interface PythonPackageInfo {
+  name: string
+  version: string
+  location?: string
+  isCustom: boolean
+}
+
+export interface PythonEnvInfo {
+  pythonVersion: string
+  pipAvailable: boolean
+  pipVersion?: string
+  userSite: string
+  packages: PythonPackageInfo[]
+}
+
 export const api = {
   // Auth
   login: (password: string) =>
@@ -111,27 +147,35 @@ export const api = {
     request<{ ok: boolean; updated: string[]; output: string }>(`/api/instances/${id}/update-apps-list`, {
       method: 'POST',
     }),
-  cleanMissingModules: (id: string) =>
+  cleanMissingModules: (id: string, mode: CleanMissingMode = 'custom') =>
     request<{
       ok: boolean
-      results: {
-        dbName: string
-        status: string
-        message?: string
-        totalOnDisk: number
-        totalInDb: number
-        detectedMissing: string[]
-        removed: string[]
-        skippedInstalled: string[]
-      }[]
+      mode: CleanMissingMode
+      results: CleanMissingDBResult[]
       output: string
     }>(`/api/instances/${id}/clean-missing-modules`, {
       method: 'POST',
+      body: JSON.stringify({ mode }),
     }),
   upgradeModules: (id: string, dbName: string, modules: string[]) =>
     request<{ ok: boolean; output: string }>(`/api/instances/${id}/upgrade-modules`, {
       method: 'POST',
       body: JSON.stringify({ dbName, modules }),
+    }),
+  listPythonPackages: (id: string) =>
+    request<PythonEnvInfo>(`/api/instances/${id}/python-packages`),
+  installPythonPackages: (
+    id: string,
+    payload: { packages?: string[]; requirements?: string; upgrade?: boolean }
+  ) =>
+    request<{ ok: boolean; output: string }>(`/api/instances/${id}/python-packages/install`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  uninstallPythonPackages: (id: string, packages: string[]) =>
+    request<{ ok: boolean; output: string }>(`/api/instances/${id}/python-packages/uninstall`, {
+      method: 'POST',
+      body: JSON.stringify({ packages }),
     }),
 
   // Databases

@@ -9,23 +9,25 @@ import {
   FileCode,
   Globe,
   Loader2,
+  Package,
   Play,
   Plus,
   Puzzle,
   RefreshCw,
   RotateCw,
   Save,
+  Search,
   ShieldCheck,
   Square,
   Terminal,
   Trash2,
 } from 'lucide-react'
-import { api } from '../api/client'
+import { api, type CleanMissingDBResult, type CleanMissingMode, type PythonEnvInfo } from '../api/client'
 import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DeployProgress, DomainConfig, OdooInstance } from '../types'
-import { StatusBadge } from '../components/UI'
+import { Modal, StatusBadge } from '../components/UI'
 import { CreateDatabaseModal } from '../components/CreateDatabaseModal'
 
-type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'config' | 'logs'
+type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'python' | 'config' | 'logs'
 
 export function InstanceDetail({
   instanceId,
@@ -56,19 +58,26 @@ export function InstanceDetail({
   const busy = busyAction !== null
   const [deploy, setDeploy] = useState<DeployProgress | null>(null)
   const [hideDeployCard, setHideDeployCard] = useState(false)
+  const [showCleanModal, setShowCleanModal] = useState(false)
+  const [cleanMode, setCleanMode] = useState<CleanMissingMode>('custom')
   const [cleanResult, setCleanResult] = useState<{
     ranAt: string
-    results: {
-      dbName: string
-      status: string
-      message?: string
-      totalOnDisk: number
-      totalInDb: number
-      detectedMissing: string[]
-      removed: string[]
-      skippedInstalled: string[]
-    }[]
+    mode: CleanMissingMode
+    results: CleanMissingDBResult[]
     output: string
+  } | null>(null)
+  const [pyEnv, setPyEnv] = useState<PythonEnvInfo | null>(null)
+  const [pyLoading, setPyLoading] = useState(false)
+  const [pyError, setPyError] = useState<string | null>(null)
+  const [pyInput, setPyInput] = useState('')
+  const [pyUpgrade, setPyUpgrade] = useState(false)
+  const [pySearch, setPySearch] = useState('')
+  const [pyFilter, setPyFilter] = useState<'all' | 'custom'>('all')
+  const [pyOutput, setPyOutput] = useState<{
+    action: string
+    output: string
+    ok: boolean
+    ranAt: string
   } | null>(null)
   const deployLogEndRef = useRef<HTMLDivElement | null>(null)
 
@@ -102,6 +111,9 @@ export function InstanceDetail({
   useEffect(() => {
     setHideDeployCard(false)
     setCleanResult(null)
+    setPyEnv(null)
+    setPyOutput(null)
+    setPyError(null)
     loadInstance()
     refreshDeployStatus()
   }, [instanceId])
@@ -126,6 +138,19 @@ export function InstanceDetail({
     deployLogEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [deploy?.logs?.length])
 
+  const loadPythonPackages = async (id: string) => {
+    setPyLoading(true)
+    setPyError(null)
+    try {
+      const info = await api.listPythonPackages(id)
+      setPyEnv(info)
+    } catch (err) {
+      setPyError(err instanceof Error ? err.message : 'Failed loading Python packages')
+    } finally {
+      setPyLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!inst) return
     if (tab === 'databases') {
@@ -137,6 +162,8 @@ export function InstanceDetail({
         setDbs(list)
         if (list.length > 0 && !upgradeDb) setUpgradeDb(list[0].name)
       }).catch(() => {})
+    } else if (tab === 'python') {
+      loadPythonPackages(inst.id)
     } else if (tab === 'config') {
       loadConf(inst.id)
     } else if (tab === 'logs') {
@@ -406,9 +433,157 @@ export function InstanceDetail({
     { id: 'domains', label: 'HTTP & Domains', icon: <Globe className="h-4 w-4" /> },
     { id: 'databases', label: 'Databases', icon: <Database className="h-4 w-4" /> },
     { id: 'addons', label: 'Addons', icon: <Puzzle className="h-4 w-4" /> },
+    { id: 'python', label: 'Python Libs', icon: <Package className="h-4 w-4" /> },
     { id: 'config', label: 'odoo.conf', icon: <FileCode className="h-4 w-4" /> },
     { id: 'logs', label: 'Logs', icon: <Terminal className="h-4 w-4" /> },
   ]
+
+  const handleInstallPython = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!inst || !pyInput.trim()) return
+    setBusyAction('py-install')
+    try {
+      const res = await api.installPythonPackages(inst.id, {
+        requirements: pyInput,
+        upgrade: pyUpgrade,
+      })
+      setPyOutput({
+        action: pyUpgrade ? 'pip install --upgrade' : 'pip install',
+        output: res.output || 'Installed successfully.',
+        ok: true,
+        ranAt: new Date().toLocaleTimeString(),
+      })
+      setPyInput('')
+      notify('Python libraries installed. Restart Odoo jika modul baru perlu di-load.')
+      await loadPythonPackages(inst.id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'pip install failed'
+      setPyOutput({
+        action: pyUpgrade ? 'pip install --upgrade' : 'pip install',
+        output: msg,
+        ok: false,
+        ranAt: new Date().toLocaleTimeString(),
+      })
+      notify(msg, 'error')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const handleUpgradeSinglePkg = async (pkgName: string) => {
+    if (!inst) return
+    setBusyAction(`py-upgrade:${pkgName}`)
+    try {
+      const res = await api.installPythonPackages(inst.id, {
+        packages: [pkgName],
+        upgrade: true,
+      })
+      setPyOutput({
+        action: `pip install --upgrade ${pkgName}`,
+        output: res.output || `${pkgName} upgraded.`,
+        ok: true,
+        ranAt: new Date().toLocaleTimeString(),
+      })
+      notify(`Upgraded "${pkgName}"`)
+      await loadPythonPackages(inst.id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Upgrade failed'
+      setPyOutput({
+        action: `pip install --upgrade ${pkgName}`,
+        output: msg,
+        ok: false,
+        ranAt: new Date().toLocaleTimeString(),
+      })
+      notify(msg, 'error')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const handleUninstallPkg = async (pkgName: string) => {
+    if (!inst) return
+    if (!window.confirm(`Uninstall Python library "${pkgName}" dari container ${inst.containerName}?`)) return
+    setBusyAction(`py-uninstall:${pkgName}`)
+    try {
+      const res = await api.uninstallPythonPackages(inst.id, [pkgName])
+      setPyOutput({
+        action: `pip uninstall ${pkgName}`,
+        output: res.output || `${pkgName} uninstalled.`,
+        ok: true,
+        ranAt: new Date().toLocaleTimeString(),
+      })
+      notify(`Uninstalled "${pkgName}"`)
+      await loadPythonPackages(inst.id)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Uninstall failed'
+      setPyOutput({
+        action: `pip uninstall ${pkgName}`,
+        output: msg,
+        ok: false,
+        ranAt: new Date().toLocaleTimeString(),
+      })
+      notify(msg, 'error')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const runCleanMissingModules = async (mode: CleanMissingMode) => {
+    if (!inst) return
+    setShowCleanModal(false)
+    setBusyAction('clean-missing-modules')
+    setCleanResult(null)
+    try {
+      const res = await api.cleanMissingModules(inst.id, mode)
+      const results = Array.isArray(res.results) ? res.results : []
+      setCleanResult({
+        ranAt: new Date().toLocaleTimeString(),
+        mode,
+        results,
+        output: res.output || '',
+      })
+      if (results.length === 0) {
+        notify('No initialized Odoo databases found to check.')
+        return
+      }
+      const totalStalled = results.reduce((sum, r) => sum + (r.stalledModules?.length || 0), 0)
+      const totalSkipped = results.reduce((sum, r) => sum + (r.skippedInstalled?.length || 0), 0)
+
+      if (mode === 'stalled') {
+        if (totalStalled > 0 || totalSkipped > 0) {
+          notify(
+            `Ditemukan ${totalStalled} modul pending/stalled dan ${totalSkipped} modul hilang yang masih installed.`,
+            'error'
+          )
+        } else {
+          notify('Tidak ditemukan modul stalled (pending state) atau modul installed yang hilang di disk.')
+        }
+        return
+      }
+
+      const totalRemoved = results.reduce((sum, r) => sum + (r.removed?.length || 0), 0)
+      if (totalRemoved > 0) {
+        const summary = results
+          .filter((r) => (r.removed?.length || 0) > 0)
+          .map((r) => `${r.dbName}: ${r.removed.join(', ')}`)
+          .join(' | ')
+        const skipNote = totalSkipped > 0 ? ` (${totalSkipped} masih installed, di-skip)` : ''
+        const stalledNote = totalStalled > 0 ? ` (${totalStalled} pending/stalled)` : ''
+        notify(`Dihapus ${totalRemoved} modul yang hilang dari Apps List — ${summary}${skipNote}${stalledNote}`)
+      } else if (totalSkipped > 0) {
+        notify(
+          `Ada ${totalSkipped} modul hilang yang masih berstatus installed. Silakan uninstall di Odoo terlebih dahulu.`,
+          'error'
+        )
+      } else {
+        notify('Semua modul di Apps List masih ada di disk (tidak ada record yang dihapus).')
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Clean Missing Apps failed', 'error')
+    } finally {
+      setBusyAction(null)
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -951,44 +1126,7 @@ export function InstanceDetail({
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={async () => {
-                    setBusyAction('clean-missing-modules')
-                    setCleanResult(null)
-                    try {
-                      const res = await api.cleanMissingModules(inst.id)
-                      const results = Array.isArray(res.results) ? res.results : []
-                      setCleanResult({
-                        ranAt: new Date().toLocaleTimeString(),
-                        results,
-                        output: res.output || '',
-                      })
-                      if (results.length === 0) {
-                        notify('No initialized Odoo databases found to check.')
-                        return
-                      }
-                      const totalRemoved = results.reduce((sum, r) => sum + (r.removed?.length || 0), 0)
-                      const totalSkipped = results.reduce((sum, r) => sum + (r.skippedInstalled?.length || 0), 0)
-                      if (totalRemoved > 0) {
-                        const summary = results
-                          .filter((r) => (r.removed?.length || 0) > 0)
-                          .map((r) => `${r.dbName}: ${r.removed.join(', ')}`)
-                          .join(' | ')
-                        const skipNote = totalSkipped > 0 ? ` (${totalSkipped} masih installed, di-skip)` : ''
-                        notify(`Dihapus ${totalRemoved} modul yang hilang dari Apps List — ${summary}${skipNote}`)
-                      } else if (totalSkipped > 0) {
-                        notify(
-                          `Ada ${totalSkipped} modul hilang yang masih berstatus installed. Silakan uninstall di Odoo terlebih dahulu.`,
-                          'error'
-                        )
-                      } else {
-                        notify('Semua modul di Apps List masih ada di disk (tidak ada record yang dihapus).')
-                      }
-                    } catch (err) {
-                      notify(err instanceof Error ? err.message : 'Clean Missing Apps failed', 'error')
-                    } finally {
-                      setBusyAction(null)
-                    }
-                  }}
+                  onClick={() => setShowCleanModal(true)}
                   title="Cek modul di disk dan hapus record modul yang sudah tidak ada dari Apps List Odoo"
                   className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-60 cursor-pointer"
                 >
@@ -997,7 +1135,11 @@ export function InstanceDetail({
                   ) : (
                     <Trash2 className="h-3.5 w-3.5" />
                   )}
-                  {busyAction === 'clean-missing-modules' ? 'Cleaning...' : 'Clean Missing Apps'}
+                  {busyAction === 'clean-missing-modules'
+                    ? cleanMode === 'stalled'
+                      ? 'Checking...'
+                      : 'Cleaning...'
+                    : 'Clean Missing Apps'}
                 </button>
                 <button
                   type="button"
@@ -1031,14 +1173,42 @@ export function InstanceDetail({
             {busyAction === 'clean-missing-modules' && (
               <div className="flex items-center gap-2 rounded-lg border border-purple-200 bg-purple-50/60 px-3.5 py-2.5 text-xs text-[#714B67]">
                 <Loader2 className="h-4 w-4 animate-spin shrink-0" />
-                <span>Memeriksa modul di <code className="bg-white/80 px-1 rounded">addons_path</code> dan mencocokkan dengan <code className="bg-white/80 px-1 rounded">ir.module.module</code> di semua database Odoo...</span>
+                <span>
+                  {cleanMode === 'stalled' ? (
+                    <>
+                      Memeriksa modul yang nyangkut di pending state (<code className="bg-white/80 px-1 rounded">to install</code>,{' '}
+                      <code className="bg-white/80 px-1 rounded">to upgrade</code>,{' '}
+                      <code className="bg-white/80 px-1 rounded">to remove</code>) dan modul hilang yang masih{' '}
+                      <code className="bg-white/80 px-1 rounded">installed</code>...
+                    </>
+                  ) : cleanMode === 'custom' ? (
+                    <>
+                      Memeriksa modul custom di <code className="bg-white/80 px-1 rounded">addons_path</code> dan mencocokkan dengan{' '}
+                      <code className="bg-white/80 px-1 rounded">ir.module.module</code> (addons bawaan Odoo dilewati)...
+                    </>
+                  ) : (
+                    <>
+                      Memeriksa semua modul di <code className="bg-white/80 px-1 rounded">addons_path</code> dan mencocokkan dengan{' '}
+                      <code className="bg-white/80 px-1 rounded">ir.module.module</code> di semua database Odoo...
+                    </>
+                  )}
+                </span>
               </div>
             )}
             {cleanResult && (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-slate-900">Hasil Clean Missing Apps</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-semibold text-slate-900">
+                      {cleanResult.mode === 'stalled' ? 'Hasil Check Stalled Modules' : 'Hasil Clean Missing Apps'}
+                    </span>
+                    <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-600">
+                      {cleanResult.mode === 'all'
+                        ? 'All Addons'
+                        : cleanResult.mode === 'custom'
+                          ? 'Custom Modules Only'
+                          : 'Check Stalled Modules Only (Read-Only)'}
+                    </span>
                     <span className="text-[11px] text-slate-500">({cleanResult.ranAt})</span>
                   </div>
                   <button
@@ -1058,18 +1228,39 @@ export function InstanceDetail({
                       <span className="rounded-md bg-white border border-slate-200 px-2 py-1 text-slate-700">
                         DB dicek: <strong>{cleanResult.results.length}</strong>
                       </span>
-                      <span className="rounded-md bg-amber-50 border border-amber-200 px-2 py-1 text-amber-800">
-                        Terdeteksi Hilang:{' '}
-                        <strong>{cleanResult.results.reduce((s, r) => s + (r.detectedMissing?.length || 0), 0)}</strong>
-                      </span>
-                      <span className="rounded-md bg-emerald-50 border border-emerald-200 px-2 py-1 text-emerald-800">
-                        Dihapus:{' '}
-                        <strong>{cleanResult.results.reduce((s, r) => s + (r.removed?.length || 0), 0)}</strong>
-                      </span>
-                      <span className="rounded-md bg-rose-50 border border-rose-200 px-2 py-1 text-rose-800">
-                        Di-skip (Installed):{' '}
-                        <strong>{cleanResult.results.reduce((s, r) => s + (r.skippedInstalled?.length || 0), 0)}</strong>
-                      </span>
+                      {cleanResult.mode === 'stalled' ? (
+                        <>
+                          <span className="rounded-md bg-amber-50 border border-amber-200 px-2 py-1 text-amber-800">
+                            Stalled (Pending State):{' '}
+                            <strong>{cleanResult.results.reduce((s, r) => s + (r.stalledModules?.length || 0), 0)}</strong>
+                          </span>
+                          <span className="rounded-md bg-rose-50 border border-rose-200 px-2 py-1 text-rose-800">
+                            Hilang tapi Installed:{' '}
+                            <strong>{cleanResult.results.reduce((s, r) => s + (r.skippedInstalled?.length || 0), 0)}</strong>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="rounded-md bg-amber-50 border border-amber-200 px-2 py-1 text-amber-800">
+                            Terdeteksi Hilang:{' '}
+                            <strong>{cleanResult.results.reduce((s, r) => s + (r.detectedMissing?.length || 0), 0)}</strong>
+                          </span>
+                          <span className="rounded-md bg-emerald-50 border border-emerald-200 px-2 py-1 text-emerald-800">
+                            Dihapus:{' '}
+                            <strong>{cleanResult.results.reduce((s, r) => s + (r.removed?.length || 0), 0)}</strong>
+                          </span>
+                          <span className="rounded-md bg-rose-50 border border-rose-200 px-2 py-1 text-rose-800">
+                            Di-skip (Installed):{' '}
+                            <strong>{cleanResult.results.reduce((s, r) => s + (r.skippedInstalled?.length || 0), 0)}</strong>
+                          </span>
+                          {cleanResult.results.reduce((s, r) => s + (r.stalledModules?.length || 0), 0) > 0 && (
+                            <span className="rounded-md bg-purple-50 border border-purple-200 px-2 py-1 text-purple-800">
+                              Stalled (Pending):{' '}
+                              <strong>{cleanResult.results.reduce((s, r) => s + (r.stalledModules?.length || 0), 0)}</strong>
+                            </span>
+                          )}
+                        </>
+                      )}
                     </div>
 
                     <div className="space-y-2">
@@ -1079,14 +1270,58 @@ export function InstanceDetail({
                             <span className="font-semibold text-slate-900">Database: {r.dbName}</span>
                             {r.status === 'ok' ? (
                               <span className="text-[11px] text-slate-500">
-                                On disk: {r.totalOnDisk} modul &bull; Di Odoo: {r.totalInDb} modul
+                                {cleanResult.mode === 'custom'
+                                  ? `Custom on disk: ${r.totalOnDisk} modul • Custom di Odoo: ${r.totalInDb} modul`
+                                  : `On disk: ${r.totalOnDisk} modul • Di Odoo: ${r.totalInDb} modul`}
                               </span>
                             ) : (
                               <span className="text-[11px] text-amber-700">{r.message}</span>
                             )}
                           </div>
 
-                          {r.status === 'ok' && (
+                          {r.status === 'ok' && cleanResult.mode === 'stalled' && (
+                            <div className="space-y-1.5">
+                              <div>
+                                <span className="font-medium text-slate-700">
+                                  Modul Nyangkut / Pending State ({r.stalledModules?.length || 0}):{' '}
+                                </span>
+                                {!r.stalledModules || r.stalledModules.length === 0 ? (
+                                  <span className="text-slate-500">Tidak ada modul pending</span>
+                                ) : (
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {r.stalledModules.map((m) => (
+                                      <span
+                                        key={`${m.name}-${m.state}`}
+                                        className="rounded bg-amber-50 border border-amber-200 px-1.5 py-0.5 font-mono text-[11px] text-amber-900"
+                                      >
+                                        {m.name} <span className="text-amber-700">({m.state})</span>
+                                        {!m.onDisk && <span className="ml-1 text-rose-700 font-semibold">[hilang di disk]</span>}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div>
+                                <span className="font-medium text-slate-700">
+                                  Modul Hilang di Disk tapi Masih Installed ({r.skippedInstalled.length}):{' '}
+                                </span>
+                                {r.skippedInstalled.length === 0 ? (
+                                  <span className="text-slate-500">Tidak ada</span>
+                                ) : (
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {r.skippedInstalled.map((m) => (
+                                      <span key={m} className="rounded bg-rose-50 border border-rose-200 px-1.5 py-0.5 font-mono text-[11px] text-rose-800">
+                                        {m}
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {r.status === 'ok' && cleanResult.mode !== 'stalled' && (
                             <div className="space-y-1.5">
                               <div>
                                 <span className="font-medium text-slate-700">Terdeteksi Hilang di Disk ({r.detectedMissing.length}): </span>
@@ -1127,6 +1362,24 @@ export function InstanceDetail({
                                     {r.skippedInstalled.map((m) => (
                                       <span key={m} className="rounded bg-rose-50 border border-rose-200 px-1.5 py-0.5 font-mono text-[11px] text-rose-800">
                                         {m}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {(r.stalledModules?.length || 0) > 0 && (
+                                <div>
+                                  <span className="font-medium text-purple-700">
+                                    Modul Pending / Stalled ({r.stalledModules.length}):{' '}
+                                  </span>
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {r.stalledModules.map((m) => (
+                                      <span
+                                        key={`${m.name}-${m.state}`}
+                                        className="rounded bg-purple-50 border border-purple-200 px-1.5 py-0.5 font-mono text-[11px] text-purple-800"
+                                      >
+                                        {m.name} ({m.state})
                                       </span>
                                     ))}
                                   </div>
@@ -1212,6 +1465,287 @@ export function InstanceDetail({
                 {busy ? 'Upgrading...' : 'Run Upgrade (-u)'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {tab === 'python' && (
+        <div className="space-y-4">
+          {inst.status !== 'running' && (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>
+                Container <strong>{inst.containerName}</strong> sedang tidak berjalan ({inst.status}). Jalankan container
+                terlebih dahulu untuk mengelola library Python.
+              </span>
+            </div>
+          )}
+
+          {/* Environment Summary */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-900">Python Environment ({inst.containerName})</h3>
+                <p className="text-xs text-slate-500">
+                  Library yang di-install disimpan di <code className="rounded bg-slate-100 px-1">/var/lib/odoo/.local</code>{' '}
+                  sehingga tetap persisten saat container di-restart atau di-redeploy.
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busy || pyLoading}
+                  onClick={() => loadPythonPackages(inst.id)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${pyLoading ? 'animate-spin text-[#714B67]' : ''}`} />
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => runAction('restart')}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+                >
+                  {busyAction === 'restart' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-[#714B67]" />
+                  ) : (
+                    <RotateCw className="h-3.5 w-3.5 text-[#714B67]" />
+                  )}
+                  Restart Odoo
+                </button>
+              </div>
+            </div>
+
+            {pyEnv && (
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-700">
+                  Python: <strong>{pyEnv.pythonVersion}</strong>
+                </span>
+                <span
+                  className={`rounded-md border px-2.5 py-1 ${
+                    pyEnv.pipAvailable
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : 'border-rose-200 bg-rose-50 text-rose-800'
+                  }`}
+                >
+                  pip: <strong>{pyEnv.pipAvailable ? pyEnv.pipVersion || 'available' : 'not available'}</strong>
+                </span>
+                <span className="rounded-md border border-purple-200 bg-purple-50 px-2.5 py-1 text-[#714B67]">
+                  Custom Installed: <strong>{pyEnv.packages.filter((p) => p.isCustom).length}</strong>
+                </span>
+                <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-slate-700">
+                  Total Packages: <strong>{pyEnv.packages.length}</strong>
+                </span>
+                {pyEnv.userSite && (
+                  <span className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 font-mono text-slate-600">
+                    {pyEnv.userSite}
+                  </span>
+                )}
+              </div>
+            )}
+            {pyError && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs text-rose-700">
+                {pyError}
+              </div>
+            )}
+          </div>
+
+          {/* Install / Requirements Form */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">Install Python Libraries (`pip install --user`)</h3>
+              <p className="text-xs text-slate-500">
+                Masukkan satu atau beberapa nama package (dipisah spasi atau baris baru, mendukung format{' '}
+                <code className="rounded bg-slate-100 px-1">requirements.txt</code> seperti{' '}
+                <code className="rounded bg-slate-100 px-1">openpyxl</code>,{' '}
+                <code className="rounded bg-slate-100 px-1">pandas&gt;=2.0</code>,{' '}
+                <code className="rounded bg-slate-100 px-1">requests==2.31.0</code>).
+              </p>
+            </div>
+            <form onSubmit={handleInstallPython} className="space-y-3">
+              <textarea
+                rows={4}
+                value={pyInput}
+                onChange={(e) => setPyInput(e.target.value)}
+                disabled={busy || inst.status !== 'running'}
+                placeholder={'openpyxl\nxlsxwriter>=3.0\npython-barcode'}
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs text-slate-900 focus:border-[#714B67] focus:outline-none disabled:bg-slate-50"
+              />
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={pyUpgrade}
+                    onChange={(e) => setPyUpgrade(e.target.checked)}
+                    disabled={busy}
+                    className="accent-[#714B67]"
+                  />
+                  Upgrade jika sudah terinstall (<code className="rounded bg-slate-100 px-1">--upgrade</code>)
+                </label>
+                <button
+                  type="submit"
+                  disabled={busy || inst.status !== 'running' || !pyInput.trim()}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-xs font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
+                >
+                  {busyAction === 'py-install' ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Plus className="h-3.5 w-3.5" />
+                  )}
+                  {busyAction === 'py-install' ? 'Installing...' : 'Install Libraries'}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Pip Command Output */}
+          {pyOutput && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs">
+                  {pyOutput.ok ? (
+                    <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-rose-600" />
+                  )}
+                  <span className="font-semibold text-slate-900">{pyOutput.action}</span>
+                  <span className="text-slate-500">({pyOutput.ranAt})</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPyOutput(null)}
+                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-100 cursor-pointer"
+                >
+                  Tutup
+                </button>
+              </div>
+              <pre className="max-h-56 overflow-auto rounded-lg bg-slate-950 p-3 font-mono text-[11px] text-slate-200 whitespace-pre-wrap">
+                {pyOutput.output}
+              </pre>
+            </div>
+          )}
+
+          {/* Installed Packages Table */}
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPyFilter('all')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold cursor-pointer ${
+                    pyFilter === 'all'
+                      ? 'bg-[#714B67] text-white'
+                      : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  All ({pyEnv?.packages.length ?? 0})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPyFilter('custom')}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold cursor-pointer ${
+                    pyFilter === 'custom'
+                      ? 'bg-[#714B67] text-white'
+                      : 'border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  Custom Installed ({pyEnv?.packages.filter((p) => p.isCustom).length ?? 0})
+                </button>
+              </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
+                <input
+                  type="text"
+                  value={pySearch}
+                  onChange={(e) => setPySearch(e.target.value)}
+                  placeholder="Cari package..."
+                  className="w-full rounded-lg border border-slate-300 pl-8 pr-3 py-1.5 text-xs focus:border-[#714B67] focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {pyLoading && !pyEnv ? (
+              <div className="flex items-center gap-2 py-6 text-xs text-slate-500">
+                <Loader2 className="h-4 w-4 animate-spin text-[#714B67]" />
+                <span>Mengambil daftar library Python dari container...</span>
+              </div>
+            ) : !pyEnv ? (
+              <p className="py-4 text-xs text-slate-500">Belum ada data package.</p>
+            ) : (
+              (() => {
+                const q = pySearch.trim().toLowerCase()
+                const filtered = pyEnv.packages.filter((p) => {
+                  if (pyFilter === 'custom' && !p.isCustom) return false
+                  if (q && !p.name.toLowerCase().includes(q) && !p.version.toLowerCase().includes(q)) return false
+                  return true
+                })
+                if (filtered.length === 0) {
+                  return (
+                    <p className="py-4 text-xs text-slate-500">
+                      {pyFilter === 'custom'
+                        ? 'Belum ada library custom yang di-install di container ini.'
+                        : 'Tidak ada package yang cocok dengan pencarian.'}
+                    </p>
+                  )
+                }
+                return (
+                  <div className="max-h-[440px] overflow-auto rounded-lg border border-slate-200">
+                    <table className="w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-slate-50 text-slate-600 border-b border-slate-200">
+                        <tr>
+                          <th className="px-3.5 py-2.5 font-semibold">Package</th>
+                          <th className="px-3.5 py-2.5 font-semibold">Version</th>
+                          <th className="px-3.5 py-2.5 font-semibold">Scope</th>
+                          <th className="px-3.5 py-2.5 font-semibold text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {filtered.map((pkg) => (
+                          <tr key={pkg.name} className="hover:bg-slate-50/70">
+                            <td className="px-3.5 py-2 font-mono font-medium text-slate-900">{pkg.name}</td>
+                            <td className="px-3.5 py-2 font-mono text-slate-600">{pkg.version}</td>
+                            <td className="px-3.5 py-2">
+                              {pkg.isCustom ? (
+                                <span className="rounded-full border border-purple-200 bg-purple-50 px-2 py-0.5 text-[10px] font-semibold text-[#714B67]">
+                                  Custom
+                                </span>
+                              ) : (
+                                <span className="rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                                  System
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3.5 py-2 text-right">
+                              <div className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={busy || inst.status !== 'running'}
+                                  onClick={() => handleUpgradeSinglePkg(pkg.name)}
+                                  className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
+                                >
+                                  {busyAction === `py-upgrade:${pkg.name}` ? 'Upgrading...' : 'Upgrade'}
+                                </button>
+                                {pkg.isCustom && (
+                                  <button
+                                    type="button"
+                                    disabled={busy || inst.status !== 'running'}
+                                    onClick={() => handleUninstallPkg(pkg.name)}
+                                    className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+                                  >
+                                    {busyAction === `py-uninstall:${pkg.name}` ? 'Removing...' : 'Uninstall'}
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )
+              })()
+            )}
           </div>
         </div>
       )}
@@ -1392,6 +1926,122 @@ export function InstanceDetail({
           }
         }}
       />
+      <Modal
+        open={showCleanModal}
+        onClose={() => setShowCleanModal(false)}
+        title="Clean Missing Apps"
+        maxWidth="max-w-lg"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-slate-600">
+            Pilih cakupan scan sebelum menjalankan pemeriksaan modul di database Odoo:
+          </p>
+
+          <div className="space-y-2.5">
+            <label
+              className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition ${
+                cleanMode === 'custom'
+                  ? 'border-[#714B67] bg-purple-50/40'
+                  : 'border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name="clean-missing-mode"
+                value="custom"
+                checked={cleanMode === 'custom'}
+                onChange={() => setCleanMode('custom')}
+                className="mt-0.5 accent-[#714B67]"
+              />
+              <div className="space-y-0.5 text-xs">
+                <div className="flex items-center gap-2 font-semibold text-slate-900">
+                  <span>Custom Modules Only</span>
+                  <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[10px] font-semibold text-[#714B67]">
+                    Recommended
+                  </span>
+                </div>
+                <p className="text-slate-500">
+                  Hanya scan &amp; hapus record modul custom/extra/recommended yang sudah hilang dari disk. Addons bawaan
+                  Odoo (termasuk daftar modul resmi/Enterprise) tidak disentuh.
+                </p>
+              </div>
+            </label>
+
+            <label
+              className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition ${
+                cleanMode === 'all'
+                  ? 'border-[#714B67] bg-purple-50/40'
+                  : 'border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name="clean-missing-mode"
+                value="all"
+                checked={cleanMode === 'all'}
+                onChange={() => setCleanMode('all')}
+                className="mt-0.5 accent-[#714B67]"
+              />
+              <div className="space-y-0.5 text-xs">
+                <div className="font-semibold text-slate-900">All Addons</div>
+                <p className="text-slate-500">
+                  Scan &amp; hapus semua record <code className="rounded bg-slate-100 px-1">ir.module.module</code> yang
+                  hilang dari disk, termasuk addons bawaan Odoo.
+                </p>
+              </div>
+            </label>
+
+            <label
+              className={`flex items-start gap-3 rounded-lg border p-3 cursor-pointer transition ${
+                cleanMode === 'stalled'
+                  ? 'border-[#714B67] bg-purple-50/40'
+                  : 'border-slate-200 hover:border-slate-300'
+              }`}
+            >
+              <input
+                type="radio"
+                name="clean-missing-mode"
+                value="stalled"
+                checked={cleanMode === 'stalled'}
+                onChange={() => setCleanMode('stalled')}
+                className="mt-0.5 accent-[#714B67]"
+              />
+              <div className="space-y-0.5 text-xs">
+                <div className="flex items-center gap-2 font-semibold text-slate-900">
+                  <span>Check Stalled Modules Only</span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                    Read-Only
+                  </span>
+                </div>
+                <p className="text-slate-500">
+                  Tidak menghapus apapun. Hanya cek modul yang nyangkut di state pending (
+                  <code className="rounded bg-slate-100 px-1">to install</code>,{' '}
+                  <code className="rounded bg-slate-100 px-1">to upgrade</code>,{' '}
+                  <code className="rounded bg-slate-100 px-1">to remove</code>) dan modul hilang yang masih berstatus{' '}
+                  <code className="rounded bg-slate-100 px-1">installed</code>.
+                </p>
+              </div>
+            </label>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+            <button
+              type="button"
+              onClick={() => setShowCleanModal(false)}
+              className="rounded-lg border border-slate-300 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 cursor-pointer"
+            >
+              Batal
+            </button>
+            <button
+              type="button"
+              onClick={() => runCleanMissingModules(cleanMode)}
+              className="rounded-lg bg-[#714B67] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#5c3c54] cursor-pointer"
+            >
+              {cleanMode === 'stalled' ? 'Check Stalled Modules' : 'Jalankan Clean Missing Apps'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   )
 }

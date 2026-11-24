@@ -102,6 +102,9 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("POST /api/instances/{id}/update-apps-list", s.handleUpdateAppsList)
 	protected.HandleFunc("POST /api/instances/{id}/clean-missing-modules", s.handleCleanMissingModules)
 	protected.HandleFunc("POST /api/instances/{id}/upgrade-modules", s.handleUpgradeModules)
+	protected.HandleFunc("GET /api/instances/{id}/python-packages", s.handleListPythonPackages)
+	protected.HandleFunc("POST /api/instances/{id}/python-packages/install", s.handleInstallPythonPackages)
+	protected.HandleFunc("POST /api/instances/{id}/python-packages/uninstall", s.handleUninstallPythonPackages)
 
 	// Databases
 	protected.HandleFunc("GET /api/databases", s.handleListAllDatabases)
@@ -531,12 +534,31 @@ func (s *Server) handleUpdateAppsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCleanMissingModules(w http.ResponseWriter, r *http.Request) {
-	results, out, err := s.odoo.CleanMissingModules(r.Context(), r.PathValue("id"))
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			writeErr(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+	mode := strings.TrimSpace(strings.ToLower(body.Mode))
+	if mode == "" {
+		mode = "all"
+	}
+	switch mode {
+	case "all", "custom", "stalled":
+	default:
+		writeErr(w, http.StatusBadRequest, "invalid mode: must be all, custom, or stalled")
+		return
+	}
+	results, out, err := s.odoo.CleanMissingModules(r.Context(), r.PathValue("id"), mode)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "output": out})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "results": results, "output": out})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mode": mode, "results": results, "output": out})
 }
 
 func (s *Server) handleUpgradeModules(w http.ResponseWriter, r *http.Request) {
@@ -549,6 +571,53 @@ func (s *Server) handleUpgradeModules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out, err := s.odoo.UpgradeModules(r.Context(), r.PathValue("id"), body.DBName, body.Modules)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "output": out})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": out})
+}
+
+func (s *Server) handleListPythonPackages(w http.ResponseWriter, r *http.Request) {
+	info, err := s.odoo.ListPythonPackages(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
+}
+
+func (s *Server) handleInstallPythonPackages(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Packages     []string `json:"packages"`
+		Requirements string   `json:"requirements"`
+		Upgrade      bool     `json:"upgrade"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	specs := append([]string{}, body.Packages...)
+	if strings.TrimSpace(body.Requirements) != "" {
+		specs = append(specs, body.Requirements)
+	}
+	out, err := s.odoo.InstallPythonPackages(r.Context(), r.PathValue("id"), specs, body.Upgrade)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "output": out})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": out})
+}
+
+func (s *Server) handleUninstallPythonPackages(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Packages []string `json:"packages"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	out, err := s.odoo.UninstallPythonPackages(r.Context(), r.PathValue("id"), body.Packages)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "output": out})
 		return
