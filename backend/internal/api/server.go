@@ -1091,13 +1091,17 @@ func (s *Server) spaHandler() http.Handler {
 			_, _ = w.Write([]byte(`<!doctype html><html><body style="font-family:sans-serif;padding:2rem"><h2>RunOdoo API Server</h2><p>Frontend static assets not found in <code>` + staticDir + `</code>. Build the frontend first.</p></body></html>`))
 			return
 		}
+		if r.URL.Path == "/" {
+			http.ServeFile(w, r, indexFile)
+			return
+		}
 		cleanPath := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
 		target := filepath.Join(staticDir, cleanPath)
 		if info, err := os.Stat(target); err == nil && !info.IsDir() {
 			http.ServeFile(w, r, target)
 			return
 		}
-		http.ServeFile(w, r, indexFile)
+		http.Redirect(w, r, "/", http.StatusFound)
 	})
 }
 
