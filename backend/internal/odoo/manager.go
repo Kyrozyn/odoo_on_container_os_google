@@ -838,7 +838,7 @@ func (m *Manager) computeRemovedModules(existing models.OdooInstance, nextRepoID
 	return out
 }
 
-// UpgradeModules runs `odoo -u <modules> --stop-after-init` inside the running Odoo container.
+// UpgradeModules runs `odoo -u <modules> --stop-after-init --no-http` inside the running Odoo container.
 func (m *Manager) UpgradeModules(ctx context.Context, idOrName, dbName string, modules []string) (string, error) {
 	inst, ok := m.store.FindInstance(idOrName)
 	if !ok {
@@ -849,12 +849,20 @@ func (m *Manager) UpgradeModules(ctx context.Context, idOrName, dbName string, m
 	}
 	modList := strings.Join(modules, ",")
 	out, code, err := m.docker.Exec(ctx, inst.ContainerName, []string{
-		"odoo", "-c", "/etc/odoo/odoo.conf", "-d", dbName, "-u", modList, "--stop-after-init",
+		"odoo", "-c", "/etc/odoo/odoo.conf", "-d", dbName, "-u", modList,
+		"--stop-after-init", "--no-http", "--workers=0", "--max-cron-threads=0",
 	}, nil)
 	if err != nil {
 		return out, err
 	}
 	if code != 0 {
+		msg := strings.TrimSpace(out)
+		if len(msg) > 400 {
+			msg = "..." + msg[len(msg)-400:]
+		}
+		if msg != "" {
+			return out, fmt.Errorf("module upgrade failed (exit %d): %s", code, msg)
+		}
 		return out, fmt.Errorf("module upgrade failed (exit %d)", code)
 	}
 	return out, nil
