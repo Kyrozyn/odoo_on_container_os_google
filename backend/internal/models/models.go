@@ -154,6 +154,44 @@ type BackupSchedule struct {
 	CreatedAt      time.Time  `json:"createdAt"`
 }
 
+type BackupJobType string
+
+const (
+	BackupJobCreate  BackupJobType = "backup"
+	BackupJobRestore BackupJobType = "restore"
+)
+
+type BackupJobStatus string
+
+const (
+	BackupJobQueued    BackupJobStatus = "queued"
+	BackupJobRunning   BackupJobStatus = "running"
+	BackupJobCompleted BackupJobStatus = "completed"
+	BackupJobFailed    BackupJobStatus = "failed"
+)
+
+// BackupJob tracks an asynchronous backup or restore task in the FIFO queue.
+type BackupJob struct {
+	ID           string          `json:"id"`
+	Type         BackupJobType   `json:"type"`
+	Source       string          `json:"source"` // manual, scheduled, restore, upload-restore
+	Status       BackupJobStatus `json:"status"`
+	InstanceID   string          `json:"instanceId"`
+	InstanceName string          `json:"instanceName"`
+	DBName       string          `json:"dbName"`
+	BackupID     string          `json:"backupId,omitempty"`
+	FileName     string          `json:"fileName,omitempty"`
+	Step         string          `json:"step,omitempty"`
+	Error        string          `json:"error,omitempty"`
+	ScheduleID   string          `json:"scheduleId,omitempty"`
+	Retention    int             `json:"retention,omitempty"`
+	ZipPath      string          `json:"-"`
+	CleanupZip   bool            `json:"-"`
+	CreatedAt    time.Time       `json:"createdAt"`
+	StartedAt    *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt   *time.Time      `json:"finishedAt,omitempty"`
+}
+
 // SharedPostgresConfig stores credentials for the shared PostgreSQL container.
 type SharedPostgresConfig struct {
 	ContainerName string `json:"containerName"`
@@ -185,6 +223,7 @@ type State struct {
 	AddonRepos      []AddonRepo          `json:"addonRepos"`
 	Backups         []BackupRecord       `json:"backups"`
 	BackupSchedules []BackupSchedule     `json:"backupSchedules"`
+	BackupJobs      []BackupJob          `json:"backupJobs"`
 }
 
 // SystemInfo summarizes host OS, CPU, RAM, disk, and Docker status.

@@ -1,6 +1,7 @@
 import type {
   AddonModule,
   AddonRepo,
+  BackupJob,
   BackupRecord,
   BackupSchedule,
   ContainerStats,
@@ -310,10 +311,12 @@ export const api = {
   // Backups
   listBackups: () => request<BackupRecord[]>('/api/backups'),
   createBackup: (instanceId: string, dbName: string) =>
-    request<BackupRecord>('/api/backups', { method: 'POST', body: JSON.stringify({ instanceId, dbName }) }),
+    request<BackupJob>('/api/backups', { method: 'POST', body: JSON.stringify({ instanceId, dbName }) }),
+  listBackupJobs: () => request<BackupJob[]>('/api/backup-jobs'),
+  clearBackupJobs: () => request<{ ok: boolean }>('/api/backup-jobs', { method: 'DELETE' }),
   downloadBackupUrl: (id: string) => `/api/backups/${id}/download?token=${encodeURIComponent(getToken() || '')}`,
   restoreBackup: (id: string, instanceId: string, targetDbName: string) =>
-    request<{ ok: boolean }>(`/api/backups/${id}/restore`, {
+    request<BackupJob>(`/api/backups/${id}/restore`, {
       method: 'POST',
       body: JSON.stringify({ instanceId, targetDbName }),
     }),
@@ -322,7 +325,7 @@ export const api = {
     fd.append('instanceId', instanceId)
     fd.append('targetDbName', targetDbName)
     fd.append('file', file)
-    return request<{ ok: boolean }>('/api/backups/upload-restore', { method: 'POST', body: fd })
+    return request<BackupJob>('/api/backups/upload-restore', { method: 'POST', body: fd })
   },
   deleteBackup: (id: string) => request<{ ok: boolean }>(`/api/backups/${id}`, { method: 'DELETE' }),
   listSchedules: () => request<BackupSchedule[]>('/api/backup-schedules'),

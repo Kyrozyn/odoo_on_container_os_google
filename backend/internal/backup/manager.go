@@ -29,8 +29,10 @@ type Manager struct {
 	docker *docker.Client
 	db     *database.Manager
 
-	mu   sync.Mutex
-	cron *cron.Cron
+	mu     sync.Mutex
+	cron   *cron.Cron
+	jobCh  chan string
+	stopCh chan struct{}
 }
 
 func NewManager(cfg *config.Config, st *store.Store, dc *docker.Client, dbm *database.Manager) *Manager {
@@ -40,18 +42,38 @@ func NewManager(cfg *config.Config, st *store.Store, dc *docker.Client, dbm *dat
 		docker: dc,
 		db:     dbm,
 		cron:   cron.New(),
+		jobCh:  make(chan string, 128),
+		stopCh: make(chan struct{}),
 	}
 }
 
-// StartScheduler loads all enabled BackupSchedules into the cron runner.
+// StartScheduler loads all enabled BackupSchedules into the cron runner and starts the FIFO job worker.
 func (m *Manager) StartScheduler() {
+	now := time.Now()
+	_ = m.store.Update(func(s *models.State) error {
+		for i := range s.BackupJobs {
+			if s.BackupJobs[i].Status == models.BackupJobQueued || s.BackupJobs[i].Status == models.BackupJobRunning {
+				s.BackupJobs[i].Status = models.BackupJobFailed
+				s.BackupJobs[i].Error = "interrupted by server restart"
+				s.BackupJobs[i].Step = "Interrupted"
+				s.BackupJobs[i].FinishedAt = &now
+			}
+		}
+		return nil
+	})
+	go m.runWorker()
 	m.ReloadSchedules()
 	m.cron.Start()
 }
 
-// StopScheduler stops the background cron runner.
+// StopScheduler stops the background cron runner and job worker.
 func (m *Manager) StopScheduler() {
 	m.cron.Stop()
+	select {
+	case <-m.stopCh:
+	default:
+		close(m.stopCh)
+	}
 }
 
 // ReloadSchedules rebuilds cron entries from stored schedules.
@@ -76,23 +98,273 @@ func (m *Manager) ReloadSchedules() {
 }
 
 func (m *Manager) runScheduledBackup(sc models.BackupSchedule) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
 	inst, ok := m.store.FindInstance(sc.InstanceID)
 	if !ok {
+		now := time.Now()
+		_ = m.store.Update(func(s *models.State) error {
+			for i := range s.BackupSchedules {
+				if s.BackupSchedules[i].ID == sc.ID {
+					s.BackupSchedules[i].LastRunAt = &now
+					s.BackupSchedules[i].LastStatus = "error: instance not found"
+					break
+				}
+			}
+			return nil
+		})
 		return
 	}
-	_, err := m.CreateBackup(ctx, inst, sc.DBName, "scheduled")
-	now := time.Now()
-	status := "success"
-	if err != nil {
-		status = "error: " + err.Error()
+
+	if _, err := m.EnqueueBackup(inst, sc.DBName, "scheduled", sc.ID, sc.RetentionCount); err != nil {
+		now := time.Now()
+		_ = m.store.Update(func(s *models.State) error {
+			for i := range s.BackupSchedules {
+				if s.BackupSchedules[i].ID == sc.ID {
+					s.BackupSchedules[i].LastRunAt = &now
+					s.BackupSchedules[i].LastStatus = "error: " + err.Error()
+					break
+				}
+			}
+			return nil
+		})
+		return
 	}
 
 	_ = m.store.Update(func(s *models.State) error {
 		for i := range s.BackupSchedules {
 			if s.BackupSchedules[i].ID == sc.ID {
+				s.BackupSchedules[i].LastStatus = "queued"
+				break
+			}
+		}
+		return nil
+	})
+}
+
+const maxPersistedJobs = 50
+
+// EnqueueBackup adds a backup creation job to the FIFO queue and returns immediately.
+func (m *Manager) EnqueueBackup(inst models.OdooInstance, dbName, source, scheduleID string, retention int) (*models.BackupJob, error) {
+	if strings.TrimSpace(dbName) == "" {
+		return nil, fmt.Errorf("database name is required")
+	}
+	if source == "" {
+		source = "manual"
+	}
+	job := models.BackupJob{
+		ID:           randomID(),
+		Type:         models.BackupJobCreate,
+		Source:       source,
+		Status:       models.BackupJobQueued,
+		InstanceID:   inst.ID,
+		InstanceName: inst.Name,
+		DBName:       strings.TrimSpace(dbName),
+		Step:         "Queued",
+		ScheduleID:   scheduleID,
+		Retention:    retention,
+		CreatedAt:    time.Now(),
+	}
+	if err := m.enqueueJob(job); err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// EnqueueRestore adds a restore job to the FIFO queue and returns immediately.
+func (m *Manager) EnqueueRestore(inst models.OdooInstance, zipPath, targetDBName, source, backupID, fileName string, cleanupZip bool) (*models.BackupJob, error) {
+	if strings.TrimSpace(targetDBName) == "" {
+		return nil, fmt.Errorf("target database name is required")
+	}
+	if source == "" {
+		source = "restore"
+	}
+	job := models.BackupJob{
+		ID:           randomID(),
+		Type:         models.BackupJobRestore,
+		Source:       source,
+		Status:       models.BackupJobQueued,
+		InstanceID:   inst.ID,
+		InstanceName: inst.Name,
+		DBName:       strings.TrimSpace(targetDBName),
+		BackupID:     backupID,
+		FileName:     fileName,
+		Step:         "Queued",
+		ZipPath:      zipPath,
+		CleanupZip:   cleanupZip,
+		CreatedAt:    time.Now(),
+	}
+	if err := m.enqueueJob(job); err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// ClearFinishedJobs removes completed and failed jobs from state.
+func (m *Manager) ClearFinishedJobs() error {
+	return m.store.Update(func(s *models.State) error {
+		kept := make([]models.BackupJob, 0, len(s.BackupJobs))
+		for _, j := range s.BackupJobs {
+			if j.Status == models.BackupJobQueued || j.Status == models.BackupJobRunning {
+				kept = append(kept, j)
+			}
+		}
+		s.BackupJobs = kept
+		return nil
+	})
+}
+
+func (m *Manager) enqueueJob(job models.BackupJob) error {
+	if err := m.store.Update(func(s *models.State) error {
+		s.BackupJobs = append([]models.BackupJob{job}, s.BackupJobs...)
+		if len(s.BackupJobs) > maxPersistedJobs {
+			s.BackupJobs = s.BackupJobs[:maxPersistedJobs]
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	select {
+	case m.jobCh <- job.ID:
+		return nil
+	default:
+		errMsg := "backup job queue is full"
+		now := time.Now()
+		_ = m.updateJob(job.ID, func(j *models.BackupJob) {
+			j.Status = models.BackupJobFailed
+			j.Error = errMsg
+			j.Step = "Failed"
+			j.FinishedAt = &now
+		})
+		return fmt.Errorf("%s", errMsg)
+	}
+}
+
+func (m *Manager) runWorker() {
+	for {
+		select {
+		case <-m.stopCh:
+			return
+		case jobID := <-m.jobCh:
+			m.executeJob(jobID)
+		}
+	}
+}
+
+func (m *Manager) updateJob(jobID string, fn func(*models.BackupJob)) error {
+	return m.store.Update(func(s *models.State) error {
+		for i := range s.BackupJobs {
+			if s.BackupJobs[i].ID == jobID {
+				fn(&s.BackupJobs[i])
+				break
+			}
+		}
+		return nil
+	})
+}
+
+func (m *Manager) executeJob(jobID string) {
+	st := m.store.Get()
+	var job *models.BackupJob
+	for i := range st.BackupJobs {
+		if st.BackupJobs[i].ID == jobID {
+			j := st.BackupJobs[i]
+			job = &j
+			break
+		}
+	}
+	if job == nil {
+		return
+	}
+
+	if job.CleanupZip && job.ZipPath != "" {
+		defer os.Remove(job.ZipPath)
+	}
+
+	started := time.Now()
+	_ = m.updateJob(jobID, func(j *models.BackupJob) {
+		j.Status = models.BackupJobRunning
+		j.StartedAt = &started
+		j.Step = "Starting..."
+	})
+
+	inst, ok := m.store.FindInstance(job.InstanceID)
+	if !ok {
+		finished := time.Now()
+		_ = m.updateJob(jobID, func(j *models.BackupJob) {
+			j.Status = models.BackupJobFailed
+			j.Error = "instance not found"
+			j.Step = "Failed"
+			j.FinishedAt = &finished
+		})
+		m.finishScheduleStatus(job.ScheduleID, "error: instance not found")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	setStep := func(step string) {
+		_ = m.updateJob(jobID, func(j *models.BackupJob) {
+			j.Step = step
+		})
+	}
+
+	switch job.Type {
+	case models.BackupJobCreate:
+		setStep("Dumping PostgreSQL database...")
+		rec, err := m.createBackupWithStep(ctx, inst, job.DBName, job.Source, setStep)
+		finished := time.Now()
+		if err != nil {
+			_ = m.updateJob(jobID, func(j *models.BackupJob) {
+				j.Status = models.BackupJobFailed
+				j.Error = err.Error()
+				j.Step = "Failed"
+				j.FinishedAt = &finished
+			})
+			m.finishScheduleStatus(job.ScheduleID, "error: "+err.Error())
+			return
+		}
+		_ = m.updateJob(jobID, func(j *models.BackupJob) {
+			j.Status = models.BackupJobCompleted
+			j.BackupID = rec.ID
+			j.FileName = rec.FileName
+			j.Step = "Completed"
+			j.FinishedAt = &finished
+		})
+		m.finishScheduleStatus(job.ScheduleID, "success")
+		if job.Retention > 0 {
+			m.enforceRetention(inst.ID, job.DBName, job.Retention)
+		}
+
+	case models.BackupJobRestore:
+		setStep("Extracting backup archive...")
+		err := m.restoreBackupWithStep(ctx, inst, job.ZipPath, job.DBName, setStep)
+		finished := time.Now()
+		if err != nil {
+			_ = m.updateJob(jobID, func(j *models.BackupJob) {
+				j.Status = models.BackupJobFailed
+				j.Error = err.Error()
+				j.Step = "Failed"
+				j.FinishedAt = &finished
+			})
+			return
+		}
+		_ = m.updateJob(jobID, func(j *models.BackupJob) {
+			j.Status = models.BackupJobCompleted
+			j.Step = "Completed"
+			j.FinishedAt = &finished
+		})
+	}
+}
+
+func (m *Manager) finishScheduleStatus(scheduleID, status string) {
+	if scheduleID == "" {
+		return
+	}
+	now := time.Now()
+	_ = m.store.Update(func(s *models.State) error {
+		for i := range s.BackupSchedules {
+			if s.BackupSchedules[i].ID == scheduleID {
 				s.BackupSchedules[i].LastRunAt = &now
 				s.BackupSchedules[i].LastStatus = status
 				break
@@ -100,19 +372,24 @@ func (m *Manager) runScheduledBackup(sc models.BackupSchedule) {
 		}
 		return nil
 	})
-
-	if err == nil && sc.RetentionCount > 0 {
-		m.enforceRetention(inst.ID, sc.DBName, sc.RetentionCount)
-	}
 }
 
 // CreateBackup produces a standard Odoo-compatible .zip containing dump.sql, filestore/, and manifest.json.
 func (m *Manager) CreateBackup(ctx context.Context, inst models.OdooInstance, dbName, source string) (*models.BackupRecord, error) {
+	return m.createBackupWithStep(ctx, inst, dbName, source, nil)
+}
+
+func (m *Manager) createBackupWithStep(ctx context.Context, inst models.OdooInstance, dbName, source string, onStep func(string)) (*models.BackupRecord, error) {
 	if dbName == "" {
 		return nil, fmt.Errorf("database name is required")
 	}
 	if source == "" {
 		source = "manual"
+	}
+	step := func(msg string) {
+		if onStep != nil {
+			onStep(msg)
+		}
 	}
 
 	if err := os.MkdirAll(m.cfg.BackupsDir(), 0o755); err != nil {
@@ -130,11 +407,13 @@ func (m *Manager) CreateBackup(ctx context.Context, inst models.OdooInstance, db
 	defer os.RemoveAll(tmpDir)
 
 	// 1. Dump PostgreSQL database to dump.sql
+	step("Dumping PostgreSQL database...")
 	dumpPath := filepath.Join(tmpDir, "dump.sql")
 	dumpFile, err := os.Create(dumpPath)
 	if err != nil {
 		return nil, err
 	}
+	step("Restoring SQL dump...")
 	pgUser, pgPass := m.db.AdminCredsForInstance(inst)
 	err = m.docker.ExecStream(ctx, inst.DBContainerName, []string{
 		"pg_dump", "--no-owner", "-U", pgUser, dbName,
@@ -145,6 +424,7 @@ func (m *Manager) CreateBackup(ctx context.Context, inst models.OdooInstance, db
 	}
 
 	// 2. Build zip archive
+	step("Creating ZIP archive (dump + filestore)...")
 	zf, err := os.Create(zipPath)
 	if err != nil {
 		return nil, err
@@ -218,8 +498,17 @@ func (m *Manager) CreateBackup(ctx context.Context, inst models.OdooInstance, db
 
 // RestoreBackup restores a .zip backup archive (dump.sql + optional filestore/) into targetDBName.
 func (m *Manager) RestoreBackup(ctx context.Context, inst models.OdooInstance, zipPath, targetDBName string) error {
+	return m.restoreBackupWithStep(ctx, inst, zipPath, targetDBName, nil)
+}
+
+func (m *Manager) restoreBackupWithStep(ctx context.Context, inst models.OdooInstance, zipPath, targetDBName string, onStep func(string)) error {
 	if targetDBName == "" {
 		return fmt.Errorf("target database name is required")
+	}
+	step := func(msg string) {
+		if onStep != nil {
+			onStep(msg)
+		}
 	}
 
 	tmpDir, err := os.MkdirTemp("", "runodoo-restore-*")
@@ -229,6 +518,7 @@ func (m *Manager) RestoreBackup(ctx context.Context, inst models.OdooInstance, z
 	defer os.RemoveAll(tmpDir)
 
 	// Extract zip
+	step("Extracting backup archive...")
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return fmt.Errorf("invalid backup zip: %w", err)
@@ -271,6 +561,7 @@ func (m *Manager) RestoreBackup(ctx context.Context, inst models.OdooInstance, z
 	}
 
 	// Recreate target database cleanly
+	step("Recreating target database...")
 	_ = m.db.DropDatabase(ctx, inst, targetDBName)
 	if err := m.db.CreateDatabase(ctx, inst, targetDBName); err != nil {
 		return fmt.Errorf("failed creating target database: %w", err)
@@ -297,6 +588,7 @@ func (m *Manager) RestoreBackup(ctx context.Context, inst models.OdooInstance, z
 	}
 	defer os.Remove(hostSQLPath)
 
+	step("Restoring SQL dump...")
 	pgUser, pgPass := m.db.AdminCredsForInstance(inst)
 	out, code, err := m.docker.Exec(ctx, inst.DBContainerName, []string{
 		"psql", "-U", pgUser, "-d", targetDBName, "-f", pgContainerTempPath,
@@ -326,6 +618,7 @@ END$$;`, inst.DBUser, inst.DBUser)
 	// Restore filestore if included in backup
 	srcFS := filepath.Join(tmpDir, "filestore")
 	if info, err := os.Stat(srcFS); err == nil && info.IsDir() {
+		step("Restoring filestore...")
 		dstFS := filepath.Join(m.cfg.InstancesDir(), inst.Name, "data", "filestore", targetDBName)
 		_ = os.RemoveAll(dstFS)
 		_ = os.MkdirAll(dstFS, 0o777)

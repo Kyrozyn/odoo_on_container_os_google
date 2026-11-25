@@ -61,6 +61,7 @@ func New(filePath, defaultPassword, sharedPGContainer string) (*Store, error) {
 		AddonRepos:      ps.AddonRepos,
 		Backups:         ps.Backups,
 		BackupSchedules: ps.BackupSchedules,
+		BackupJobs:      ps.BackupJobs,
 	}
 	if s.state.Instances == nil {
 		s.state.Instances = []models.OdooInstance{}
@@ -73,6 +74,9 @@ func New(filePath, defaultPassword, sharedPGContainer string) (*Store, error) {
 	}
 	if s.state.BackupSchedules == nil {
 		s.state.BackupSchedules = []models.BackupSchedule{}
+	}
+	if s.state.BackupJobs == nil {
+		s.state.BackupJobs = []models.BackupJob{}
 	}
 
 	// Ensure required secrets exist even if state file was hand-edited.
@@ -222,6 +226,7 @@ type persistedState struct {
 	AddonRepos      []models.AddonRepo          `json:"addonRepos"`
 	Backups         []models.BackupRecord       `json:"backups"`
 	BackupSchedules []models.BackupSchedule     `json:"backupSchedules"`
+	BackupJobs      []models.BackupJob          `json:"backupJobs"`
 }
 
 func (s *Store) saveLocked() error {
@@ -242,6 +247,7 @@ func (s *Store) saveLocked() error {
 		AddonRepos:      s.state.AddonRepos,
 		Backups:         s.state.Backups,
 		BackupSchedules: s.state.BackupSchedules,
+		BackupJobs:      s.state.BackupJobs,
 	}
 
 	raw, err := json.MarshalIndent(ps, "", "  ")

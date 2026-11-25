@@ -128,6 +128,8 @@ func (s *Server) Routes() http.Handler {
 	// Backups & Schedules
 	protected.HandleFunc("GET /api/backups", s.handleListBackups)
 	protected.HandleFunc("POST /api/backups", s.handleCreateBackup)
+	protected.HandleFunc("GET /api/backup-jobs", s.handleListBackupJobs)
+	protected.HandleFunc("DELETE /api/backup-jobs", s.handleClearBackupJobs)
 	protected.HandleFunc("GET /api/backups/{id}/download", s.handleDownloadBackup)
 	protected.HandleFunc("POST /api/backups/{id}/restore", s.handleRestoreBackup)
 	protected.HandleFunc("POST /api/backups/upload-restore", s.handleUploadRestoreBackup)
@@ -1118,6 +1120,19 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, st.Backups)
 }
 
+func (s *Server) handleListBackupJobs(w http.ResponseWriter, r *http.Request) {
+	st := s.store.Get()
+	writeJSON(w, http.StatusOK, st.BackupJobs)
+}
+
+func (s *Server) handleClearBackupJobs(w http.ResponseWriter, r *http.Request) {
+	if err := s.backup.ClearFinishedJobs(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		InstanceID string `json:"instanceId"`
@@ -1132,12 +1147,12 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "instance not found")
 		return
 	}
-	rec, err := s.backup.CreateBackup(r.Context(), inst, body.DBName, "manual")
+	job, err := s.backup.EnqueueBackup(inst, body.DBName, "manual", "", 0)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, rec)
+	writeJSON(w, http.StatusAccepted, job)
 }
 
 func (s *Server) handleDownloadBackup(w http.ResponseWriter, r *http.Request) {
@@ -1191,11 +1206,12 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		targetDB = backupRec.DBName
 	}
 
-	if err := s.backup.RestoreBackup(r.Context(), inst, backupRec.FilePath, targetDB); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+	job, err := s.backup.EnqueueRestore(inst, backupRec.FilePath, targetDB, "restore", backupRec.ID, backupRec.FileName, false)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusAccepted, job)
 }
 
 func (s *Server) handleUploadRestoreBackup(w http.ResponseWriter, r *http.Request) {
@@ -1211,7 +1227,7 @@ func (s *Server) handleUploadRestoreBackup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	file, _, err := r.FormFile("file")
+	file, hdr, err := r.FormFile("file")
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, "file field is required")
 		return
@@ -1224,20 +1240,22 @@ func (s *Server) handleUploadRestoreBackup(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
 
 	if _, err := io.Copy(tmp, file); err != nil {
 		tmp.Close()
+		_ = os.Remove(tmpPath)
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	tmp.Close()
 
-	if err := s.backup.RestoreBackup(r.Context(), inst, tmpPath, targetDB); err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+	job, err := s.backup.EnqueueRestore(inst, tmpPath, targetDB, "upload-restore", "", hdr.Filename, true)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusAccepted, job)
 }
 
 func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {

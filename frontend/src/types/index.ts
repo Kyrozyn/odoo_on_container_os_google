@@ -113,6 +113,24 @@ export interface BackupSchedule {
   createdAt: string
 }
 
+export interface BackupJob {
+  id: string
+  type: 'backup' | 'restore'
+  source: string
+  status: 'queued' | 'running' | 'completed' | 'failed'
+  instanceId: string
+  instanceName: string
+  dbName: string
+  backupId?: string
+  fileName?: string
+  step?: string
+  error?: string
+  scheduleId?: string
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+}
+
 export interface PanelSettings {
   rootDomain: string
   panelSubdomain: string

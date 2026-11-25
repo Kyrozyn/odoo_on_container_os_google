@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react'
-import { Archive, Calendar, Download, Plus, RotateCcw, Trash2, Upload } from 'lucide-react'
+import React, { useEffect, useRef, useState } from 'react'
+import { Archive, Calendar, CheckCircle2, Clock, Download, Loader2, Plus, RotateCcw, Trash2, Upload, XCircle } from 'lucide-react'
 import { api } from '../api/client'
-import type { BackupRecord, BackupSchedule, OdooInstance } from '../types'
+import type { BackupJob, BackupRecord, BackupSchedule, OdooInstance } from '../types'
 import { formatBytes, Modal } from '../components/UI'
 
 export function Backups({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
   const [backups, setBackups] = useState<BackupRecord[]>([])
+  const [jobs, setJobs] = useState<BackupJob[]>([])
   const [schedules, setSchedules] = useState<BackupSchedule[]>([])
   const [instances, setInstances] = useState<OdooInstance[]>([])
   const [showCreate, setShowCreate] = useState(false)
@@ -13,6 +14,7 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
   const [showSched, setShowSched] = useState(false)
   const [restoreTarget, setRestoreTarget] = useState<BackupRecord | null>(null)
   const [busy, setBusy] = useState(false)
+  const prevActiveRef = useRef(0)
 
   // Forms
   const [instId, setInstId] = useState('')
@@ -24,16 +26,20 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
 
   const load = async () => {
     try {
-      const [b, sc, insts] = await Promise.all([
+      const [b, j, sc, insts] = await Promise.all([
         api.listBackups(),
+        api.listBackupJobs(),
         api.listSchedules(),
         api.listInstances(),
       ])
       const safeInsts = Array.isArray(insts) ? insts : []
+      const safeJobs = Array.isArray(j) ? j : []
       setBackups(Array.isArray(b) ? b : [])
+      setJobs(safeJobs)
       setSchedules(Array.isArray(sc) ? sc : [])
       setInstances(safeInsts)
       if (safeInsts.length > 0 && !instId) setInstId(safeInsts[0].id)
+      prevActiveRef.current = safeJobs.filter((item) => item.status === 'queued' || item.status === 'running').length
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading backups', 'error')
     }
@@ -43,17 +49,39 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
     load()
   }, [])
 
+  useEffect(() => {
+    const hasActive = jobs.some((j) => j.status === 'queued' || j.status === 'running')
+    if (!hasActive) return
+    const timer = setInterval(async () => {
+      try {
+        const nextJobs = await api.listBackupJobs()
+        const safeJobs = Array.isArray(nextJobs) ? nextJobs : []
+        setJobs(safeJobs)
+        const activeCount = safeJobs.filter((j) => j.status === 'queued' || j.status === 'running').length
+        if (activeCount < prevActiveRef.current) {
+          const [b, sc] = await Promise.all([api.listBackups(), api.listSchedules()])
+          setBackups(Array.isArray(b) ? b : [])
+          setSchedules(Array.isArray(sc) ? sc : [])
+        }
+        prevActiveRef.current = activeCount
+      } catch {
+        // Ignore transient polling errors
+      }
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [jobs])
+
   const handleCreateBackup = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy(true)
     try {
       await api.createBackup(instId, dbName.trim())
-      notify('Backup (DB + Filestore ZIP) created!')
+      notify('Backup queued! Check Backup Jobs below for progress.')
       setShowCreate(false)
       setDbName('')
       load()
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Backup failed', 'error')
+      notify(err instanceof Error ? err.message : 'Failed queueing backup', 'error')
     } finally {
       setBusy(false)
     }
@@ -65,12 +93,13 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
     setBusy(true)
     try {
       await api.uploadRestoreBackup(instId, dbName.trim(), uploadFile)
-      notify(`Restored backup into "${dbName.trim()}"!`)
+      notify(`Restore queued for "${dbName.trim()}"! Check Backup Jobs below for progress.`)
       setShowUpload(false)
       setDbName('')
       setUploadFile(null)
+      load()
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Restore failed', 'error')
+      notify(err instanceof Error ? err.message : 'Failed queueing restore', 'error')
     } finally {
       setBusy(false)
     }
@@ -82,10 +111,11 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
     setBusy(true)
     try {
       await api.restoreBackup(restoreTarget.id, restoreTarget.instanceId, restoreDbName.trim())
-      notify(`Restored "${restoreTarget.fileName}" into "${restoreDbName.trim()}"!`)
+      notify(`Restore queued for "${restoreDbName.trim()}"! Check Backup Jobs below for progress.`)
       setRestoreTarget(null)
+      load()
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Restore failed', 'error')
+      notify(err instanceof Error ? err.message : 'Failed queueing restore', 'error')
     } finally {
       setBusy(false)
     }
@@ -140,6 +170,80 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
           >
             <Plus className="h-4 w-4" /> Create Backup
           </button>
+        </div>
+      </div>
+
+      {/* Backup & Restore Jobs Queue */}
+      <div className="rounded-xl border border-slate-200 bg-white shadow-xs overflow-hidden">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+          <div className="font-semibold text-sm text-slate-900">
+            Backup &amp; Restore Jobs ({jobs.length})
+          </div>
+          {jobs.some((j) => j.status === 'completed' || j.status === 'failed') && (
+            <button
+              onClick={async () => {
+                await api.clearBackupJobs()
+                load()
+              }}
+              className="text-xs font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
+            >
+              Clear Finished
+            </button>
+          )}
+        </div>
+        <div className="divide-y divide-slate-100">
+          {jobs.map((j) => (
+            <div key={j.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2 text-sm font-medium text-slate-900">
+                  <span className="uppercase text-[10px] font-semibold rounded bg-slate-100 px-1.5 py-0.5 text-slate-700">
+                    {j.type}
+                  </span>
+                  <span>
+                    {j.instanceName} / <span className="font-semibold">{j.dbName}</span>
+                  </span>
+                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-normal text-slate-600">
+                    {j.source}
+                  </span>
+                </div>
+                <div className="text-xs text-slate-500">
+                  {j.error ? (
+                    <span className="text-rose-600">{j.error}</span>
+                  ) : (
+                    <span>{j.step || j.status}</span>
+                  )}
+                  {j.fileName && <span className="ml-2 font-mono text-[11px] text-slate-600">({j.fileName})</span>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {j.status === 'queued' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2.5 py-0.5 text-xs font-medium text-amber-700">
+                    <Clock className="h-3 w-3" /> Queued
+                  </span>
+                )}
+                {j.status === 'running' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-0.5 text-xs font-medium text-blue-700">
+                    <Loader2 className="h-3 w-3 animate-spin" /> Running
+                  </span>
+                )}
+                {j.status === 'completed' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+                    <CheckCircle2 className="h-3 w-3" /> Completed
+                  </span>
+                )}
+                {j.status === 'failed' && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 border border-rose-200 px-2.5 py-0.5 text-xs font-medium text-rose-700">
+                    <XCircle className="h-3 w-3" /> Failed
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+          {jobs.length === 0 && (
+            <div className="px-5 py-6 text-center text-xs text-slate-500">
+              No backup or restore jobs in queue.
+            </div>
+          )}
         </div>
       </div>
 
