@@ -44,7 +44,7 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter admin password (default: runodoo123)"
+                placeholder="Enter admin password"
                 required
                 autoFocus
                 className="w-full rounded-lg border border-slate-300 py-2 pl-9 pr-3 text-sm focus:border-[#714B67] focus:outline-none focus:ring-2 focus:ring-[#714B67]/20"
@@ -66,10 +66,6 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
             {loading ? 'Signing in...' : 'Sign In to RunOdoo'}
           </button>
         </form>
-
-        <p className="mt-6 text-center text-xs text-slate-400">
-          Listening on Port 3000 &bull; Nginx + Certbot Ready
-        </p>
       </div>
     </div>
   )
