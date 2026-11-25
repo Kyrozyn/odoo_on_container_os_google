@@ -62,8 +62,8 @@ Google COS uses a read-only root filesystem and comes with Docker pre-installed 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/Kyrozyn/odoo_on_container_os_google.git
-cd odoo_on_container_os_google
+git clone https://github.com/Kyrozyn/runodoo.git
+cd runodoo
 ```
 
 ### 2. Run the Installer (Recommended for Google COS & Linux)
