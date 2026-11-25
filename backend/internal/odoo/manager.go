@@ -1,11 +1,15 @@
 package odoo
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -840,18 +844,9 @@ func (m *Manager) computeRemovedModules(existing models.OdooInstance, nextRepoID
 
 // UpgradeModules runs `odoo -u <modules> --stop-after-init --no-http` inside the running Odoo container.
 func (m *Manager) UpgradeModules(ctx context.Context, idOrName, dbName string, modules []string) (string, error) {
-	inst, ok := m.store.FindInstance(idOrName)
-	if !ok {
-		return "", fmt.Errorf("instance not found")
-	}
-	if dbName == "" || len(modules) == 0 {
-		return "", fmt.Errorf("database name and at least one module are required")
-	}
-	modList := strings.Join(modules, ",")
-	out, code, err := m.docker.Exec(ctx, inst.ContainerName, []string{
-		"odoo", "-c", "/etc/odoo/odoo.conf", "-d", dbName, "-u", modList,
-		"--stop-after-init", "--no-http", "--workers=0", "--max-cron-threads=0",
-	}, nil)
+	var buf bytes.Buffer
+	code, err := m.UpgradeModulesStream(ctx, idOrName, dbName, modules, &buf)
+	out := buf.String()
 	if err != nil {
 		return out, err
 	}
@@ -866,6 +861,60 @@ func (m *Manager) UpgradeModules(ctx context.Context, idOrName, dbName string, m
 		return out, fmt.Errorf("module upgrade failed (exit %d)", code)
 	}
 	return out, nil
+}
+
+// UpgradeModulesStream runs `odoo -u <modules> --stop-after-init --no-http` and streams combined output to dst.
+func (m *Manager) UpgradeModulesStream(ctx context.Context, idOrName, dbName string, modules []string, dst io.Writer) (int, error) {
+	inst, ok := m.store.FindInstance(idOrName)
+	if !ok {
+		return -1, fmt.Errorf("instance not found")
+	}
+	if dbName == "" || len(modules) == 0 {
+		return -1, fmt.Errorf("database name and at least one module are required")
+	}
+	modList := strings.Join(modules, ",")
+	return m.docker.ExecStreamCombined(ctx, inst.ContainerName, []string{
+		"odoo", "-c", "/etc/odoo/odoo.conf", "-d", dbName, "-u", modList,
+		"--stop-after-init", "--no-http", "--workers=0", "--max-cron-threads=0",
+	}, nil, dst)
+}
+
+// ExecStream runs a shell command inside the running Odoo container and streams combined output to dst.
+func (m *Manager) ExecStream(ctx context.Context, idOrName, command, cwd string, dst io.Writer) (int, error) {
+	inst, ok := m.store.FindInstance(idOrName)
+	if !ok {
+		return -1, fmt.Errorf("instance not found")
+	}
+	if strings.TrimSpace(command) == "" {
+		return -1, fmt.Errorf("command is required")
+	}
+	env := []string{"RUNODOO_CMD=" + command}
+	if strings.TrimSpace(cwd) != "" {
+		env = append(env, "RUNODOO_CWD="+cwd)
+	}
+	script := `if [ -n "$RUNODOO_CWD" ]; then cd "$RUNODOO_CWD" 2>/dev/null || true; fi; eval "$RUNODOO_CMD"; __ec=$?; printf '\n__RUNODOO_PWD__:%s\n' "$(pwd)"; exit $__ec`
+	return m.docker.ExecStreamCombined(ctx, inst.ContainerName, []string{"sh", "-c", script}, env, dst)
+}
+
+// OpenTerminal opens an interactive PTY shell inside the running Odoo container.
+func (m *Manager) OpenTerminal(ctx context.Context, idOrName string, rows, cols int) (string, net.Conn, *bufio.Reader, error) {
+	inst, ok := m.store.FindInstance(idOrName)
+	if !ok {
+		return "", nil, nil, fmt.Errorf("instance not found")
+	}
+	return m.docker.ExecInteractive(
+		ctx,
+		inst.ContainerName,
+		[]string{"sh", "-c", "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"},
+		[]string{"TERM=xterm-256color"},
+		rows,
+		cols,
+	)
+}
+
+// ResizeTerminal resizes the PTY of an active container terminal session.
+func (m *Manager) ResizeTerminal(ctx context.Context, execID string, rows, cols int) error {
+	return m.docker.ResizeExec(ctx, execID, rows, cols)
 }
 
 // PythonPackageInfo represents an installed Python package inside an Odoo container.

@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -448,6 +449,23 @@ func (c *Client) Exec(ctx context.Context, idOrName string, cmd []string, env []
 
 // ExecStream runs a command inside a container and writes raw stdout to dst (useful for pg_dump).
 func (c *Client) ExecStream(ctx context.Context, idOrName string, cmd []string, env []string, dst io.Writer) error {
+	var stderrBuf bytes.Buffer
+	code, err := c.execStream(ctx, idOrName, cmd, env, dst, &stderrBuf)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("exec exited with %d: %s", code, strings.TrimSpace(stderrBuf.String()))
+	}
+	return nil
+}
+
+// ExecStreamCombined runs a command inside a container and streams both stdout and stderr to dst.
+func (c *Client) ExecStreamCombined(ctx context.Context, idOrName string, cmd []string, env []string, dst io.Writer) (int, error) {
+	return c.execStream(ctx, idOrName, cmd, env, dst, dst)
+}
+
+func (c *Client) execStream(ctx context.Context, idOrName string, cmd []string, env []string, stdout, stderr io.Writer) (int, error) {
 	createPayload := map[string]any{
 		"AttachStdout": true,
 		"AttachStderr": true,
@@ -458,34 +476,87 @@ func (c *Client) ExecStream(ctx context.Context, idOrName string, cmd []string, 
 		ID string `json:"Id"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(idOrName)+"/exec", createPayload, &createRes); err != nil {
-		return err
+		return -1, err
 	}
 
 	startBody, _ := json.Marshal(map[string]any{"Detach": false, "Tty": false})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/exec/"+createRes.ID+"/start", bytes.NewReader(startBody))
 	if err != nil {
-		return err
+		return -1, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return err
+		return -1, err
 	}
 	defer resp.Body.Close()
 
-	var stderrBuf bytes.Buffer
-	if err := demuxToWriters(resp.Body, dst, &stderrBuf); err != nil {
-		return err
+	if err := demuxToWriters(resp.Body, stdout, stderr); err != nil {
+		return -1, err
 	}
 
 	var inspectRes struct {
 		ExitCode int `json:"ExitCode"`
 	}
 	_ = c.doJSON(ctx, http.MethodGet, "/exec/"+createRes.ID+"/json", nil, &inspectRes)
-	if inspectRes.ExitCode != 0 {
-		return fmt.Errorf("exec exited with %d: %s", inspectRes.ExitCode, strings.TrimSpace(stderrBuf.String()))
+	return inspectRes.ExitCode, nil
+}
+
+// ExecInteractive starts an interactive TTY exec session inside a container and returns the raw bidirectional connection.
+func (c *Client) ExecInteractive(ctx context.Context, idOrName string, cmd []string, env []string, rows, cols int) (string, net.Conn, *bufio.Reader, error) {
+	createPayload := map[string]any{
+		"AttachStdin":  true,
+		"AttachStdout": true,
+		"AttachStderr": true,
+		"Tty":          true,
+		"Cmd":          cmd,
+		"Env":          env,
 	}
-	return nil
+	var createRes struct {
+		ID string `json:"Id"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/containers/"+url.PathEscape(idOrName)+"/exec", createPayload, &createRes); err != nil {
+		return "", nil, nil, err
+	}
+
+	conn, err := net.DialTimeout("unix", c.socketPath, 10*time.Second)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	startBody, _ := json.Marshal(map[string]any{"Detach": false, "Tty": true})
+	rawReq := fmt.Sprintf(
+		"POST /v1.43/exec/%s/start HTTP/1.1\r\nHost: docker\r\nContent-Type: application/json\r\nConnection: Upgrade\r\nUpgrade: tcp\r\nContent-Length: %d\r\n\r\n%s",
+		createRes.ID, len(startBody), startBody,
+	)
+	if _, err := io.WriteString(conn, rawReq); err != nil {
+		_ = conn.Close()
+		return "", nil, nil, err
+	}
+
+	br := bufio.NewReader(conn)
+	req, _ := http.NewRequest(http.MethodPost, c.baseURL+"/exec/"+createRes.ID+"/start", nil)
+	resp, err := http.ReadResponse(br, req)
+	if err != nil {
+		_ = conn.Close()
+		return "", nil, nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols && resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		_ = conn.Close()
+		return "", nil, nil, fmt.Errorf("docker exec upgrade failed with status %d", resp.StatusCode)
+	}
+
+	if rows > 0 && cols > 0 {
+		_ = c.ResizeExec(ctx, createRes.ID, rows, cols)
+	}
+	return createRes.ID, conn, br, nil
+}
+
+// ResizeExec resizes the TTY of a running docker exec session.
+func (c *Client) ResizeExec(ctx context.Context, execID string, rows, cols int) error {
+	path := fmt.Sprintf("/exec/%s/resize?h=%d&w=%d", url.PathEscape(execID), rows, cols)
+	return c.doJSON(ctx, http.MethodPost, path, nil, nil)
 }
 
 // RunOneShot creates, starts, waits for, captures logs, and removes a short-lived container (e.g. Certbot).

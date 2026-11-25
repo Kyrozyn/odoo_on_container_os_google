@@ -26,8 +26,9 @@ import { api, type CleanMissingDBResult, type CleanMissingMode, type PythonEnvIn
 import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DeployProgress, DomainConfig, OdooInstance } from '../types'
 import { Modal, StatusBadge } from '../components/UI'
 import { CreateDatabaseModal } from '../components/CreateDatabaseModal'
+import { ContainerTerminal } from '../components/ContainerTerminal'
 
-type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'python' | 'config' | 'logs'
+type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'python' | 'config' | 'logs' | 'terminal'
 
 export function InstanceDetail({
   instanceId,
@@ -80,6 +81,15 @@ export function InstanceDetail({
     ranAt: string
   } | null>(null)
   const deployLogEndRef = useRef<HTMLDivElement | null>(null)
+  const [upgradeLog, setUpgradeLog] = useState('')
+  const [upgradeStatus, setUpgradeStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle')
+  const upgradeLogRef = useRef<HTMLPreElement | null>(null)
+
+  useEffect(() => {
+    if (upgradeLogRef.current) {
+      upgradeLogRef.current.scrollTop = upgradeLogRef.current.scrollHeight
+    }
+  }, [upgradeLog])
 
   const loadInstance = async () => {
     try {
@@ -291,11 +301,17 @@ export function InstanceDetail({
     const mods = upgradeMods.split(',').map((s) => s.trim()).filter(Boolean)
     if (!upgradeDb || mods.length === 0) return
     setBusyAction('upgrade')
+    setUpgradeLog('')
+    setUpgradeStatus('running')
     try {
-      await api.upgradeModules(inst.id, upgradeDb, mods)
+      await api.upgradeModulesStream(inst.id, upgradeDb, mods, (chunk) => {
+        setUpgradeLog((prev) => prev + chunk)
+      })
+      setUpgradeStatus('success')
       notify(`Upgraded modules (${mods.join(', ')}) on ${upgradeDb}!`)
       setUpgradeMods('')
     } catch (err) {
+      setUpgradeStatus('error')
       notify(err instanceof Error ? err.message : 'Module upgrade failed', 'error')
     } finally {
       setBusyAction(null)
@@ -436,6 +452,7 @@ export function InstanceDetail({
     { id: 'python', label: 'Python Libs', icon: <Package className="h-4 w-4" /> },
     { id: 'config', label: 'odoo.conf', icon: <FileCode className="h-4 w-4" /> },
     { id: 'logs', label: 'Logs', icon: <Terminal className="h-4 w-4" /> },
+    { id: 'terminal', label: 'Terminal', icon: <Terminal className="h-4 w-4" /> },
   ]
 
   const handleInstallPython = async (e: React.FormEvent) => {
@@ -1465,6 +1482,51 @@ export function InstanceDetail({
                 {busy ? 'Upgrading...' : 'Run Upgrade (-u)'}
               </button>
             </form>
+
+            {(upgradeStatus !== 'idle' || upgradeLog) && (
+              <div className="rounded-lg border border-slate-800 bg-slate-950 overflow-hidden">
+                <div className="flex items-center justify-between border-b border-slate-800 px-3 py-2 text-xs">
+                  <div className="flex items-center gap-2 font-mono text-slate-300">
+                    <Terminal className="h-3.5 w-3.5 text-slate-400" />
+                    <span>CLI Output</span>
+                    {upgradeStatus === 'running' && (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[11px] text-amber-300">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        Running
+                      </span>
+                    )}
+                    {upgradeStatus === 'success' && (
+                      <span className="rounded bg-emerald-500/20 px-1.5 py-0.5 text-[11px] text-emerald-300">
+                        Completed (Exit 0)
+                      </span>
+                    )}
+                    {upgradeStatus === 'error' && (
+                      <span className="rounded bg-rose-500/20 px-1.5 py-0.5 text-[11px] text-rose-300">
+                        Failed
+                      </span>
+                    )}
+                  </div>
+                  {upgradeStatus !== 'running' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUpgradeLog('')
+                        setUpgradeStatus('idle')
+                      }}
+                      className="text-slate-400 hover:text-white cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <pre
+                  ref={upgradeLogRef}
+                  className="max-h-80 overflow-y-auto p-3 font-mono text-xs leading-relaxed text-slate-100 whitespace-pre-wrap break-words"
+                >
+                  {upgradeLog || 'Waiting for Odoo CLI output...'}
+                </pre>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1908,6 +1970,26 @@ export function InstanceDetail({
           <pre className="max-h-[520px] overflow-auto rounded-lg bg-slate-950 p-4 font-mono text-xs text-emerald-300 whitespace-pre-wrap">
             {logs || 'No logs available.'}
           </pre>
+        </div>
+      )}
+
+      {tab === 'terminal' && (
+        <div className="space-y-4">
+          {inst.status !== 'running' && (
+            <div className="flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>
+                Container <strong>{inst.containerName}</strong> sedang tidak berjalan ({inst.status}). Jalankan container
+                terlebih dahulu untuk membuka terminal.
+              </span>
+            </div>
+          )}
+
+          <ContainerTerminal
+            instanceId={inst.id}
+            containerName={inst.containerName}
+            running={inst.status === 'running'}
+          />
         </div>
       )}
       <CreateDatabaseModal

@@ -53,6 +53,64 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data as T
 }
 
+async function streamExecRequest(
+  path: string,
+  body: unknown,
+  onChunk: (text: string) => void,
+  options?: { signal?: AbortSignal; onPwd?: (pwd: string) => void }
+): Promise<number> {
+  const token = getToken()
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  const res = await fetch(path, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+    signal: options?.signal,
+  })
+  if (res.status === 401) {
+    clearToken()
+    window.dispatchEvent(new Event('runodoo:unauthorized'))
+    throw new Error('Unauthorized')
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || `Request failed (${res.status})`)
+  }
+  if (!res.body) {
+    throw new Error('Streaming not supported by browser')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let full = ''
+  let emittedLen = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    full += decoder.decode(value, { stream: true })
+    const markerIdx = full.search(/\n__RUNODOO_(EXIT|ERROR|PWD)__:/)
+    const visibleEnd = markerIdx >= 0 ? markerIdx : full.length
+    if (visibleEnd > emittedLen) {
+      onChunk(full.slice(emittedLen, visibleEnd))
+      emittedLen = visibleEnd
+    }
+  }
+  full += decoder.decode()
+  const pwdMatch = full.match(/\n__RUNODOO_PWD__:([^\n]*)/)
+  if (pwdMatch && options?.onPwd) {
+    options.onPwd(pwdMatch[1])
+  }
+  const errMatch = full.match(/\n__RUNODOO_ERROR__:([^\n]*)/)
+  if (errMatch) {
+    throw new Error(errMatch[1] || 'Command execution failed')
+  }
+  const exitMatch = full.match(/\n__RUNODOO_EXIT__:(-?\d+)/)
+  return exitMatch ? parseInt(exitMatch[1], 10) : 0
+}
+
 export type CleanMissingMode = 'all' | 'custom' | 'stalled'
 
 export interface StalledModuleInfo {
@@ -162,6 +220,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ dbName, modules }),
     }),
+  upgradeModulesStream: async (
+    id: string,
+    dbName: string,
+    modules: string[],
+    onChunk: (text: string) => void
+  ): Promise<number> => {
+    const exitCode = await streamExecRequest(
+      `/api/instances/${id}/upgrade-modules/stream`,
+      { dbName, modules },
+      onChunk
+    )
+    if (exitCode !== 0) {
+      throw new Error(`Module upgrade failed (exit ${exitCode})`)
+    }
+    return exitCode
+  },
+  execStream: (
+    id: string,
+    command: string,
+    cwd: string,
+    onChunk: (text: string) => void,
+    options?: { signal?: AbortSignal; onPwd?: (pwd: string) => void }
+  ) => streamExecRequest(`/api/instances/${id}/exec/stream`, { command, cwd }, onChunk, options),
   listPythonPackages: (id: string) =>
     request<PythonEnvInfo>(`/api/instances/${id}/python-packages`),
   installPythonPackages: (

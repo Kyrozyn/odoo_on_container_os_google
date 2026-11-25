@@ -102,6 +102,9 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("POST /api/instances/{id}/update-apps-list", s.handleUpdateAppsList)
 	protected.HandleFunc("POST /api/instances/{id}/clean-missing-modules", s.handleCleanMissingModules)
 	protected.HandleFunc("POST /api/instances/{id}/upgrade-modules", s.handleUpgradeModules)
+	protected.HandleFunc("POST /api/instances/{id}/upgrade-modules/stream", s.handleUpgradeModulesStream)
+	protected.HandleFunc("POST /api/instances/{id}/exec/stream", s.handleExecStream)
+	protected.HandleFunc("GET /api/instances/{id}/terminal", s.handleTerminalWS)
 	protected.HandleFunc("GET /api/instances/{id}/python-packages", s.handleListPythonPackages)
 	protected.HandleFunc("POST /api/instances/{id}/python-packages/install", s.handleInstallPythonPackages)
 	protected.HandleFunc("POST /api/instances/{id}/python-packages/uninstall", s.handleUninstallPythonPackages)
@@ -576,6 +579,156 @@ func (s *Server) handleUpgradeModules(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "output": out})
+}
+
+type flushWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (fw *flushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if fw.f != nil {
+		fw.f.Flush()
+	}
+	return n, err
+}
+
+func (s *Server) handleUpgradeModulesStream(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		DBName  string   `json:"dbName"`
+		Modules []string `json:"modules"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.DBName) == "" || len(body.Modules) == 0 {
+		writeErr(w, http.StatusBadRequest, "database name and at least one module are required")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, _ := w.(http.Flusher)
+	fw := &flushWriter{w: w, f: flusher}
+	_, _ = fmt.Fprintf(fw, "$ odoo -c /etc/odoo/odoo.conf -d %s -u %s --stop-after-init --no-http --workers=0 --max-cron-threads=0\n",
+		body.DBName, strings.Join(body.Modules, ","))
+
+	code, err := s.odoo.UpgradeModulesStream(r.Context(), r.PathValue("id"), body.DBName, body.Modules, fw)
+	if err != nil {
+		_, _ = fmt.Fprintf(fw, "\n__RUNODOO_ERROR__:%s\n", err.Error())
+		return
+	}
+	_, _ = fmt.Fprintf(fw, "\n__RUNODOO_EXIT__:%d\n", code)
+}
+
+func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Command string `json:"command"`
+		Cwd     string `json:"cwd"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(body.Command) == "" {
+		writeErr(w, http.StatusBadRequest, "command is required")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, _ := w.(http.Flusher)
+	fw := &flushWriter{w: w, f: flusher}
+	code, err := s.odoo.ExecStream(r.Context(), r.PathValue("id"), body.Command, body.Cwd, fw)
+	if err != nil {
+		_, _ = fmt.Fprintf(fw, "\n__RUNODOO_ERROR__:%s\n", err.Error())
+		return
+	}
+	_, _ = fmt.Fprintf(fw, "\n__RUNODOO_EXIT__:%d\n", code)
+}
+
+func (s *Server) handleTerminalWS(w http.ResponseWriter, r *http.Request) {
+	cols, _ := strconv.Atoi(r.URL.Query().Get("cols"))
+	rows, _ := strconv.Atoi(r.URL.Query().Get("rows"))
+	if cols <= 0 {
+		cols = 80
+	}
+	if rows <= 0 {
+		rows = 24
+	}
+
+	execID, dockerConn, dockerReader, err := s.odoo.OpenTerminal(r.Context(), r.PathValue("id"), rows, cols)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ws, err := upgradeWebSocket(w, r)
+	if err != nil {
+		_ = dockerConn.Close()
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer func() {
+		_ = dockerConn.Close()
+		_ = ws.Close()
+	}()
+
+	done := make(chan struct{}, 2)
+
+	// Docker PTY -> WebSocket
+	go func() {
+		defer func() { done <- struct{}{} }()
+		buf := make([]byte, 8192)
+		for {
+			n, err := dockerReader.Read(buf)
+			if n > 0 {
+				if werr := ws.WriteMessage(wsOpBinary, buf[:n]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// WebSocket -> Docker PTY
+	go func() {
+		defer func() { done <- struct{}{} }()
+		for {
+			op, payload, err := ws.ReadMessage()
+			if err != nil {
+				return
+			}
+			if op == wsOpText && len(payload) > 0 && payload[0] == '{' {
+				var ctrl struct {
+					Type string `json:"type"`
+					Cols int    `json:"cols"`
+					Rows int    `json:"rows"`
+				}
+				if json.Unmarshal(payload, &ctrl) == nil && ctrl.Type == "resize" && ctrl.Cols > 0 && ctrl.Rows > 0 {
+					_ = s.odoo.ResizeTerminal(context.Background(), execID, ctrl.Rows, ctrl.Cols)
+					continue
+				}
+			}
+			if len(payload) > 0 {
+				if _, err := dockerConn.Write(payload); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	<-done
 }
 
 func (s *Server) handleListPythonPackages(w http.ResponseWriter, r *http.Request) {
