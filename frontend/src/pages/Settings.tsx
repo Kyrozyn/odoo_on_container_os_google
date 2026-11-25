@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Globe, KeyRound, Loader2, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Globe, KeyRound, Loader2, Network, RefreshCw, ShieldCheck } from 'lucide-react'
 import { api } from '../api/client'
 import type { PanelSettings } from '../types'
 
@@ -18,9 +18,10 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
   const [email, setEmail] = useState('')
   const [forceHttps, setForceHttps] = useState(false)
   const [disableDirectPort, setDisableDirectPort] = useState(false)
+  const [panelPort, setPanelPort] = useState('3000')
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
-  const [busyAction, setBusyAction] = useState<'save' | 'ssl' | 'nginx' | 'password' | null>(null)
+  const [busyAction, setBusyAction] = useState<'save' | 'ssl' | 'nginx' | 'port' | 'password' | null>(null)
   const busy = busyAction !== null
 
   const load = async () => {
@@ -32,6 +33,7 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
       setEmail(s.letsEncryptEmail || '')
       setForceHttps(s.panelForceHttps || false)
       setDisableDirectPort(s.disableDirectPort || false)
+      setPanelPort(s.panelPort || '3000')
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading settings', 'error')
     }
@@ -103,6 +105,53 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed enabling SSL', 'error')
     } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const handleChangePort = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const portNum = Number(panelPort.trim())
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      notify('Port must be an integer between 1 and 65535', 'error')
+      return
+    }
+    setBusyAction('port')
+    try {
+      const res = await api.changePanelPort(portNum)
+      if (!res.recreating) {
+        notify(`Panel is already running on port ${res.port}`)
+        setBusyAction(null)
+        return
+      }
+
+      const usingDirectPort = window.location.port !== ''
+      const nextUrl = usingDirectPort
+        ? `${window.location.protocol}//${window.location.hostname}:${res.port}${window.location.pathname}`
+        : window.location.href
+      const healthUrl = usingDirectPort
+        ? `${window.location.protocol}//${window.location.hostname}:${res.port}/api/health`
+        : '/api/health'
+
+      notify(`Recreating RunOdoo container on port ${res.port}... Please wait.`)
+
+      for (let i = 0; i < 25; i++) {
+        await new Promise((r) => setTimeout(r, 1000))
+        try {
+          const resp = await fetch(healthUrl, { cache: 'no-store' })
+          if (resp.ok) {
+            window.location.href = nextUrl
+            return
+          }
+        } catch {
+          // Container still restarting
+        }
+      }
+
+      notify(`Container recreated. Redirecting to port ${res.port}...`)
+      window.location.href = nextUrl
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Failed changing panel port', 'error')
       setBusyAction(null)
     }
   }
@@ -199,10 +248,10 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
                   disabled={!rootDomain.trim()}
                   onChange={(e) => setDisableDirectPort(e.target.checked)}
                 />
-                Disable direct port 3000 access (Panel Domain only)
+                Disable direct port {settings?.panelPort || '3000'} access (Panel Domain only)
               </label>
               <p className="ml-6 mt-0.5 text-xs text-slate-500">
-                Blocks direct access via IP:3000 and allows access only through the configured Panel Domain. Make sure your Panel Domain is reachable first.
+                Blocks direct access via IP:{settings?.panelPort || '3000'} and allows access only through the configured Panel Domain. Make sure your Panel Domain is reachable first.
               </p>
             </div>
           </div>
@@ -245,6 +294,44 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
               {busyAction === 'nginx' ? 'Syncing Nginx...' : 'Ensure / Reload Nginx'}
             </button>
           </div>
+        </form>
+      </div>
+
+      {/* Panel Port */}
+      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+            <Network className="h-5 w-5 text-[#714B67]" />
+            Panel Port
+          </h2>
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+            Current: {settings?.panelPort || '3000'}
+          </span>
+        </div>
+        <p className="text-xs text-slate-500">
+          Change the host port used to access RunOdoo directly. Saving will recreate the RunOdoo container with the new port mapping (and roll back automatically if the port is unavailable). Make sure the new port is allowed in your firewall.
+        </p>
+        <form onSubmit={handleChangePort} className="flex flex-wrap items-end gap-3 max-w-md">
+          <div className="flex-1 min-w-[160px]">
+            <label className="mb-1 block text-xs font-medium text-slate-700">Host Port (1-65535)</label>
+            <input
+              type="number"
+              min={1}
+              max={65535}
+              required
+              value={panelPort}
+              onChange={(e) => setPanelPort(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
+          >
+            {busyAction === 'port' && <Loader2 className="h-4 w-4 animate-spin" />}
+            {busyAction === 'port' ? 'Updating Port...' : 'Change Panel Port'}
+          </button>
         </form>
       </div>
 

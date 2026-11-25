@@ -170,6 +170,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
+  changePanelPort: (port: number) =>
+    request<{ ok: boolean; port: string; recreating: boolean }>('/api/settings/port', {
+      method: 'POST',
+      body: JSON.stringify({ port }),
+    }),
   enablePanelSsl: () => request<{ ok: boolean; domain: string; logs: string }>('/api/settings/enable-ssl', { method: 'POST' }),
   syncProxy: () => request<{ ok: boolean }>('/api/proxy/sync', { method: 'POST' }),
 

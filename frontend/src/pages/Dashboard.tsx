@@ -174,7 +174,7 @@ export function Dashboard({
               <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
                 {settings?.panelSubdomain || 'panel'}.{rootDomainInput || 'yourdomain.com'}
               </code>{' '}
-              and Odoo apps at <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">&lt;app&gt;.{rootDomainInput || 'yourdomain.com'}</code> — or keep using port 3000 directly.
+              and Odoo apps at <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">&lt;app&gt;.{rootDomainInput || 'yourdomain.com'}</code> — or keep using port {settings?.panelPort || '3000'} directly.
             </p>
           </div>
           {settings?.panelHasSsl && (

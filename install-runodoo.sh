@@ -48,6 +48,60 @@ else
     fi
 fi
 
+# 2a. Check if Panel Port is available (default 3000)
+is_port_in_use() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        if ss -tuln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"; then
+            return 0
+        fi
+    elif command -v netstat >/dev/null 2>&1; then
+        if netstat -tuln 2>/dev/null | grep -qE "[:.]${port}[[:space:]]"; then
+            return 0
+        fi
+    elif (echo >/dev/tcp/127.0.0.1/"${port}") >/dev/null 2>&1; then
+        return 0
+    fi
+    if $DOCKER_CMD ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | grep -v '^runodoo ' | grep -qE ":${port}->"; then
+        return 0
+    fi
+    return 1
+}
+
+RUNODOO_OWNS_PORT=false
+if $DOCKER_CMD ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "runodoo"; then
+    if $DOCKER_CMD port runodoo 3000/tcp 2>/dev/null | grep -qE ":${PANEL_PORT}$"; then
+        RUNODOO_OWNS_PORT=true
+    fi
+fi
+
+if [ "$RUNODOO_OWNS_PORT" = false ] && is_port_in_use "${PANEL_PORT}"; then
+    echo ""
+    echo "WARNING: Port ${PANEL_PORT} is already in use by another service or container."
+    if [ -r /dev/tty ]; then
+        while true; do
+            printf "Enter a new port for RunOdoo Panel (1-65535): " > /dev/tty
+            IFS= read -r NEW_PORT < /dev/tty || NEW_PORT=""
+            NEW_PORT="$(echo "$NEW_PORT" | tr -d '[:space:]')"
+            if ! [[ "$NEW_PORT" =~ ^[0-9]+$ ]] || [ "$NEW_PORT" -lt 1 ] || [ "$NEW_PORT" -gt 65535 ]; then
+                echo "Invalid port. Please enter a number between 1 and 65535." > /dev/tty
+                continue
+            fi
+            if is_port_in_use "${NEW_PORT}"; then
+                echo "Port ${NEW_PORT} is also in use. Please choose another port." > /dev/tty
+                continue
+            fi
+            PANEL_PORT="${NEW_PORT}"
+            echo "Using port ${PANEL_PORT} for RunOdoo Panel."
+            break
+        done
+    else
+        echo "Error: Port ${PANEL_PORT} is already in use and no interactive terminal (/dev/tty) is available." >&2
+        echo "Re-run with: RUNODOO_PORT=<port> bash install-runodoo.sh" >&2
+        exit 1
+    fi
+fi
+
 # 2b. Configure global Docker DNS (fixes Alpine apk / image pull DNS issues)
 if [ ! -f /etc/docker/daemon.json ] || ! sudo grep -q '"dns"' /etc/docker/daemon.json 2>/dev/null; then
     echo "Configuring global Docker DNS (1.1.1.1, 8.8.8.8)..."

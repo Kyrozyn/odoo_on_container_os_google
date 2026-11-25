@@ -22,6 +22,20 @@ import (
 )
 
 func main() {
+	if rawSpec := os.Getenv("RUNODOO_RECREATE_SPEC"); rawSpec != "" {
+		sock := os.Getenv("DOCKER_SOCKET")
+		if sock == "" {
+			sock = "/var/run/docker.sock"
+		}
+		dc := docker.NewClient(sock)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := docker.RunRecreateHelper(ctx, dc, rawSpec); err != nil {
+			log.Fatalf("recreate helper failed: %v", err)
+		}
+		return
+	}
+
 	cfg := config.Load()
 	if err := cfg.EnsureDirs(); err != nil {
 		log.Fatalf("failed to initialize data directories (%s): %v", cfg.DataDir, err)

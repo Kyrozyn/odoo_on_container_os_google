@@ -81,6 +81,20 @@ type ContainerInspect struct {
 		Env    []string          `json:"Env"`
 		Labels map[string]string `json:"Labels"`
 	} `json:"Config"`
+	HostConfig struct {
+		Binds        []string `json:"Binds"`
+		PortBindings map[string][]struct {
+			HostIP   string `json:"HostIp"`
+			HostPort string `json:"HostPort"`
+		} `json:"PortBindings"`
+		RestartPolicy struct {
+			Name string `json:"Name"`
+		} `json:"RestartPolicy"`
+		NetworkMode string `json:"NetworkMode"`
+	} `json:"HostConfig"`
+	NetworkSettings struct {
+		Networks map[string]any `json:"Networks"`
+	} `json:"NetworkSettings"`
 }
 
 type ContainerStats struct {
@@ -100,6 +114,7 @@ type CreateContainerSpec struct {
 	PortMappings  map[string]string // containerPort/tcp -> hostPort (e.g. "8069/tcp": "8069")
 	Network       string
 	RestartPolicy string // "unless-stopped", "no", "always"
+	AutoRemove    bool
 	MemoryLimit   int64  // bytes, optional
 }
 
@@ -256,6 +271,7 @@ func (c *Client) CreateContainer(ctx context.Context, spec CreateContainerSpec) 
 	hostConfig := map[string]any{
 		"Binds":        spec.Binds,
 		"PortBindings": portBindings,
+		"AutoRemove":   spec.AutoRemove,
 		"RestartPolicy": map[string]any{
 			"Name": restartName,
 		},
@@ -324,6 +340,11 @@ func (c *Client) RemoveContainer(ctx context.Context, idOrName string, force boo
 		q = "?force=true"
 	}
 	return c.doEmpty(ctx, http.MethodDelete, "/containers/"+url.PathEscape(idOrName)+q)
+}
+
+// RenameContainer renames an existing container.
+func (c *Client) RenameContainer(ctx context.Context, idOrName, newName string) error {
+	return c.doEmpty(ctx, http.MethodPost, "/containers/"+url.PathEscape(idOrName)+"/rename?name="+url.QueryEscape(newName))
 }
 
 // ContainerLogs returns recent stdout+stderr logs for a container.

@@ -82,6 +82,7 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("GET /api/system/versions", s.handleVersions)
 	protected.HandleFunc("GET /api/settings", s.handleGetSettings)
 	protected.HandleFunc("PUT /api/settings", s.handleUpdateSettings)
+	protected.HandleFunc("POST /api/settings/port", s.handleChangePanelPort)
 	protected.HandleFunc("POST /api/settings/enable-ssl", s.handleEnablePanelSSL)
 	protected.HandleFunc("POST /api/proxy/sync", s.handleProxySync)
 
@@ -217,7 +218,8 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 		dockerOK = true
 		dockerVer = v.Version
 	}
-	info := system.CollectSystemInfo(s.cfg.DataDir, s.cfg.Port, dockerOK, dockerVer)
+	panelPort := s.currentHostPanelPort(ctx)
+	info := system.CollectSystemInfo(s.cfg.DataDir, panelPort, dockerOK, dockerVer)
 	writeJSON(w, http.StatusOK, info)
 }
 
@@ -228,6 +230,7 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	st := s.store.Get()
 	settings := st.Settings
+	settings.PanelPort = s.currentHostPanelPort(r.Context())
 	if panelDomain := proxy.PanelDomain(settings.RootDomain, settings.PanelSubdomain); panelDomain != "" {
 		settings.PanelHasSSL = s.proxy.CertExists(panelDomain)
 	} else {
@@ -308,6 +311,158 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+func (s *Server) inspectSelfContainer(ctx context.Context) (*docker.ContainerInspect, string) {
+	if host, err := os.Hostname(); err == nil && host != "" {
+		if info, err := s.docker.InspectContainer(ctx, host); err == nil {
+			name := strings.TrimPrefix(info.Name, "/")
+			if name == "" {
+				name = host
+			}
+			return info, name
+		}
+	}
+	if info, err := s.docker.InspectContainer(ctx, "runodoo"); err == nil {
+		name := strings.TrimPrefix(info.Name, "/")
+		if name == "" {
+			name = "runodoo"
+		}
+		return info, name
+	}
+	return nil, ""
+}
+
+func (s *Server) currentHostPanelPort(ctx context.Context) string {
+	info, _ := s.inspectSelfContainer(ctx)
+	if info != nil {
+		key := s.cfg.Port + "/tcp"
+		if bindings, ok := info.HostConfig.PortBindings[key]; ok && len(bindings) > 0 && bindings[0].HostPort != "" {
+			return bindings[0].HostPort
+		}
+		for _, bindings := range info.HostConfig.PortBindings {
+			if len(bindings) > 0 && bindings[0].HostPort != "" {
+				return bindings[0].HostPort
+			}
+		}
+	}
+	return s.cfg.Port
+}
+
+func (s *Server) handleChangePanelPort(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Port int `json:"port"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.Port < 1 || body.Port > 65535 {
+		writeErr(w, http.StatusBadRequest, "port must be between 1 and 65535")
+		return
+	}
+	newPortStr := strconv.Itoa(body.Port)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	selfInfo, selfName := s.inspectSelfContainer(ctx)
+	if selfInfo == nil {
+		writeErr(w, http.StatusBadRequest, "changing panel port is only supported when RunOdoo is running inside Docker")
+		return
+	}
+
+	currentPort := s.currentHostPanelPort(ctx)
+	if currentPort == newPortStr {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"port":       newPortStr,
+			"recreating": false,
+		})
+		return
+	}
+
+	// Check if another running container already uses the target port on the host.
+	containers, err := s.docker.ListContainers(ctx, false, "")
+	if err == nil {
+		for _, c := range containers {
+			if c.ID == selfInfo.ID {
+				continue
+			}
+			for _, p := range c.Ports {
+				if p.PublicPort == body.Port {
+					cName := c.ID[:12]
+					if len(c.Names) > 0 {
+						cName = strings.TrimPrefix(c.Names[0], "/")
+					}
+					writeErr(w, http.StatusConflict, fmt.Sprintf("port %d is already in use by container %s", body.Port, cName))
+					return
+				}
+			}
+		}
+	}
+
+	// Also check if something on the container's own loopback/port (not applicable for host,
+	// so the helper container performs atomic rename + rollback if Docker bind fails).
+	networkName := s.cfg.DockerNetwork
+	for netName := range selfInfo.NetworkSettings.Networks {
+		if netName != "" && netName != "bridge" {
+			networkName = netName
+			break
+		}
+	}
+
+	restartPolicy := selfInfo.HostConfig.RestartPolicy.Name
+	if restartPolicy == "" {
+		restartPolicy = "unless-stopped"
+	}
+
+	recreateSpec := docker.RecreateSpec{
+		TargetContainer: selfName,
+		NewSpec: docker.CreateContainerSpec{
+			Name:          selfName,
+			Image:         selfInfo.Config.Image,
+			Env:           selfInfo.Config.Env,
+			Labels:        selfInfo.Config.Labels,
+			Binds:         selfInfo.HostConfig.Binds,
+			PortMappings:  map[string]string{s.cfg.Port + "/tcp": newPortStr},
+			Network:       networkName,
+			RestartPolicy: restartPolicy,
+		},
+	}
+
+	rawSpec, err := json.Marshal(recreateSpec)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to encode recreate spec: "+err.Error())
+		return
+	}
+
+	const updaterName = "runodoo-port-updater"
+	_ = s.docker.RemoveContainer(ctx, updaterName, true)
+
+	helperID, err := s.docker.CreateContainer(ctx, docker.CreateContainerSpec{
+		Name:          updaterName,
+		Image:         selfInfo.Config.Image,
+		Env:           []string{"RUNODOO_RECREATE_SPEC=" + string(rawSpec), "DOCKER_SOCKET=" + s.cfg.DockerSocket},
+		Binds:         []string{s.cfg.DockerSocket + ":/var/run/docker.sock"},
+		RestartPolicy: "no",
+		AutoRemove:    true,
+	})
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "failed to create port updater helper: "+err.Error())
+		return
+	}
+	if err := s.docker.StartContainer(ctx, helperID); err != nil {
+		_ = s.docker.RemoveContainer(ctx, helperID, true)
+		writeErr(w, http.StatusInternalServerError, "failed to start port updater helper: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"port":       newPortStr,
+		"recreating": true,
+	})
 }
 
 func (s *Server) handleEnablePanelSSL(w http.ResponseWriter, r *http.Request) {
@@ -1285,7 +1440,7 @@ func (s *Server) withPanelAccessControl(next http.Handler) http.Handler {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`<!doctype html><html><body style="font-family:sans-serif;padding:2rem"><h2>Direct Port Access Disabled</h2><p>Direct access via port 3000 is disabled. Please access RunOdoo via your configured Panel Domain.</p></body></html>`))
+			_, _ = w.Write([]byte(`<!doctype html><html><body style="font-family:sans-serif;padding:2rem"><h2>Direct Port Access Disabled</h2><p>Direct access via the panel port is disabled. Please access RunOdoo via your configured Panel Domain.</p></body></html>`))
 			return
 		}
 

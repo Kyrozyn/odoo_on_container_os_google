@@ -171,7 +171,8 @@ type PanelSettings struct {
 	PanelForceHTTPS   bool   `json:"panelForceHttps"`
 	DisableDirectPort bool   `json:"disableDirectPort"`
 	LetsEncryptEmail  string `json:"letsEncryptEmail"`
-	PasswordHash      string `json:"-"`                // never exposed in API JSON
+	PanelPort         string `json:"panelPort,omitempty"`
+	PasswordHash      string `json:"-"` // never exposed in API JSON
 	PasswordChanged   bool   `json:"passwordChanged"`
 	JWTSecret         string `json:"-"`
 }

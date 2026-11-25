@@ -120,6 +120,7 @@ export interface PanelSettings {
   panelForceHttps: boolean
   disableDirectPort: boolean
   letsEncryptEmail: string
+  panelPort?: string
   passwordChanged: boolean
 }
 
