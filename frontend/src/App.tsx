@@ -93,54 +93,53 @@ export default function App() {
   return (
     <div className="min-h-screen flex bg-slate-50">
       {/* Dark Sidebar */}
-      <aside className="w-60 shrink-0 bg-slate-900 text-slate-300 flex flex-col justify-between">
-        <div>
-          <div className="flex items-center gap-2.5 px-5 py-5 border-b border-slate-800">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#714B67] text-white shadow-md">
-              <Server className="h-5 w-5" />
-            </div>
-            <div>
-              <div className="text-base font-bold text-white leading-tight">RunOdoo</div>
-              <div className="text-[11px] text-slate-400">Odoo 17–20 PaaS</div>
-            </div>
+      <aside className="w-60 shrink-0 bg-slate-900 text-slate-300 flex flex-col">
+        <div className="flex items-center gap-2.5 px-5 py-5 border-b border-slate-800">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#714B67] text-white shadow-md">
+            <Server className="h-5 w-5" />
           </div>
-
-          <nav className="p-3 space-y-1">
-            {navItems.map((item) => {
-              const active = page === item.id || (page === 'instance-detail' && item.id === 'instances')
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => {
-                    setSelectedInstanceId(null)
-                    setPage(item.id)
-                  }}
-                  className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition cursor-pointer ${
-                    active
-                      ? 'bg-[#714B67] text-white shadow-xs'
-                      : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                  }`}
-                >
-                  {item.icon}
-                  {item.label}
-                </button>
-              )
-            })}
-          </nav>
+          <div>
+            <div className="text-base font-bold text-white leading-tight">RunOdoo</div>
+            <div className="text-[11px] text-slate-400">Odoo 17–20 PaaS</div>
+          </div>
         </div>
 
-        <div className="p-3 border-t border-slate-800">
-          <button
-            onClick={() => {
-              clearToken()
-              setAuthed(false)
-            }}
-            className="w-full flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white cursor-pointer"
-          >
-            <LogOut className="h-4 w-4" />
-            Sign Out
-          </button>
-        </div>
+        <nav className="p-3 space-y-1">
+          {navItems.map((item) => {
+            const active = page === item.id || (page === 'instance-detail' && item.id === 'instances')
+            return (
+              <button
+                key={item.id}
+                onClick={() => {
+                  setSelectedInstanceId(null)
+                  setPage(item.id)
+                }}
+                className={`w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition cursor-pointer ${
+                  active
+                    ? 'bg-[#714B67] text-white shadow-xs'
+                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                }`}
+              >
+                {item.icon}
+                {item.label}
+              </button>
+            )
+          })}
+
+          <div className="pt-2 mt-2 border-t border-slate-800">
+            <button
+              type="button"
+              onClick={() => {
+                clearToken()
+                setAuthed(false)
+              }}
+              className="w-full flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition cursor-pointer"
+            >
+              <LogOut className="h-4 w-4" />
+              Logout
+            </button>
+          </div>
+        </nav>
       </aside>
 
       {/* Main Content */}
