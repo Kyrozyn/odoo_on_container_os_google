@@ -74,7 +74,6 @@ type OdooInstance struct {
 	DefaultDBName     string            `json:"defaultDbName"`
 	AdminPassword     string            `json:"adminPassword"`
 	AddonRepoIDs      []string          `json:"addonRepoIds"`
-	RecommendedAddons []string          `json:"recommendedAddons"`
 	EnvVars           map[string]string `json:"envVars"`
 	ConfOptions       map[string]string `json:"confOptions"`
 	CustomConf        string            `json:"customConf"`

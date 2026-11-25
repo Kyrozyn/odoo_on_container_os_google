@@ -63,15 +63,9 @@ fi
 # 3. Prepare host data directory
 echo "Preparing data directory: ${DATA_DIR}"
 sudo mkdir -p "${DATA_DIR}/config" "${DATA_DIR}/instances" "${DATA_DIR}/addons" \
-              "${DATA_DIR}/recommended-addons" "${DATA_DIR}/backups" \
-              "${DATA_DIR}/nginx/conf.d" "${DATA_DIR}/certbot/www" \
-              "${DATA_DIR}/certbot/conf" "${DATA_DIR}/postgres-shared"
-
-# Sync built-in recommended addons from repo ./addons
-if [ -d "${SCRIPT_DIR}/addons" ] && [ -n "$(ls -A "${SCRIPT_DIR}/addons" 2>/dev/null)" ]; then
-    echo "Syncing recommended addons from ${SCRIPT_DIR}/addons -> ${DATA_DIR}/recommended-addons..."
-    sudo cp -r "${SCRIPT_DIR}/addons/." "${DATA_DIR}/recommended-addons/"
-fi
+              "${DATA_DIR}/backups" "${DATA_DIR}/nginx/conf.d" \
+              "${DATA_DIR}/certbot/www" "${DATA_DIR}/certbot/conf" \
+              "${DATA_DIR}/postgres-shared"
 
 # 4. Create Docker network
 $DOCKER_CMD network inspect runodoo-net >/dev/null 2>&1 || \
@@ -103,8 +97,6 @@ $DOCKER_CMD run -d \
     -e "RUNODOO_PORT=3000" \
     -e "RUNODOO_DATA_DIR=/var/runodoo" \
     -e "RUNODOO_HOST_DATA_DIR=${DATA_DIR}" \
-    -e "RUNODOO_RECOMMENDED_ADDONS_DIR=/var/runodoo/recommended-addons" \
-    -e "RUNODOO_HOST_RECOMMENDED_ADDONS_DIR=${DATA_DIR}/recommended-addons" \
     -e "RUNODOO_DEFAULT_PASSWORD=${DEFAULT_PASS}" \
     -e "RUNODOO_NETWORK=runodoo-net" \
     -v /var/run/docker.sock:/var/run/docker.sock \

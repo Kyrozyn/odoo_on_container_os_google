@@ -118,7 +118,6 @@ func (s *Server) Routes() http.Handler {
 
 	// Addons
 	protected.HandleFunc("GET /api/addons", s.handleListAddons)
-	protected.HandleFunc("GET /api/addons/recommended", s.handleListRecommendedAddons)
 	protected.HandleFunc("POST /api/addons/git", s.handleCloneAddon)
 	protected.HandleFunc("POST /api/addons/upload", s.handleUploadAddonZip)
 	protected.HandleFunc("POST /api/addons/{id}/pull", s.handlePullAddon)
@@ -870,10 +869,6 @@ func (s *Server) handleDropDatabase(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleListAddons(w http.ResponseWriter, r *http.Request) {
 	st := s.store.Get()
 	writeJSON(w, http.StatusOK, st.AddonRepos)
-}
-
-func (s *Server) handleListRecommendedAddons(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.addons.ListRecommendedAddons())
 }
 
 func (s *Server) handleCloneAddon(w http.ResponseWriter, r *http.Request) {

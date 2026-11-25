@@ -32,7 +32,6 @@ Built with a **Go** backend (single lightweight static binary with minimal RAM f
   - Create, initialize (admin user, language, country, demo data), duplicate (DB + filestore), and drop databases directly from the UI.
 
 - **Addons, Python Libs & Live CLI Module Upgrade**
-  - Built-in `addons/` folder serves as a **Recommended Addons** catalog — select only the modules you need per instance, and only those modules are mounted into the container.
   - Clone & pull **Git repositories** (including private repositories with personal access tokens) or upload `.zip` archives.
   - Recursive `__manifest__.py` scanning and automatic `addons_path` generation per instance.
   - **Update Apps List**, **Clean Missing Apps** (checks `addons_path` vs. `ir.module.module` per database and removes stale uninstalled records with a detailed breakdown), **Python Libs** manager (`pip` inside `/var/lib/odoo/.local`), and **CLI Module Upgrade (`odoo -u`)** with **real-time streaming CLI output**.
@@ -74,7 +73,7 @@ chmod +x install-runodoo.sh
 ./install-runodoo.sh
 ```
 
-The script automatically detects **Google COS** or **standard Linux**, installs Docker if missing (non-COS), configures Docker DNS, prepares `/var/runodoo`, syncs `./addons`, builds the `runodoo:latest` Docker image, and starts the container on port `3000`.
+The script automatically detects **Google COS** or **standard Linux**, installs Docker if missing (non-COS), configures Docker DNS, prepares `/var/runodoo`, builds the `runodoo:latest` Docker image, and starts the container on port `3000`.
 
 ### Alternative: Docker Compose
 
@@ -101,7 +100,7 @@ After the container is running, follow these steps in order:
    - In **Settings**, enable **Force HTTPS redirect on Panel Domain** and **Disable direct port 3000 access (Panel Domain only)**.
    - For each Odoo instance (**HTTP & Domains** tab), attach its domain and disable **Direct HTTP Port** so it is only accessible through Nginx over HTTPS.
 5. **Deploy Your First Odoo App**
-   - Go to **Odoo Apps → Create Instance**, pick your Odoo version (`17`–`20`), PostgreSQL mode (**Shared** or **Dedicated**), and any **Recommended Addons**.
+   - Go to **Odoo Apps → Create Instance**, pick your Odoo version (`17`–`20`), PostgreSQL mode (**Shared** or **Dedicated**), and optionally attach any Git/ZIP addons you've added under **Addons**.
    - Once running, open **Databases → Create Database** to initialize your first Odoo database, or use the **Terminal** tab for direct container access.
 
 ---
@@ -126,8 +125,6 @@ If you changed Nginx configuration templates in an update, open **Settings** in 
 | `RUNODOO_PORT` | `3000` | Port the control panel listens on |
 | `RUNODOO_DATA_DIR` | `/var/runodoo` | Data directory inside the RunOdoo container |
 | `RUNODOO_HOST_DATA_DIR` | `/var/runodoo` | Host path mapped to `RUNODOO_DATA_DIR` (used for sibling container bind mounts) |
-| `RUNODOO_RECOMMENDED_ADDONS_DIR` | `/var/runodoo/recommended-addons` | Recommended addons path inside the container |
-| `RUNODOO_HOST_RECOMMENDED_ADDONS_DIR` | `/var/runodoo/recommended-addons` | Host path for recommended addons |
 | `RUNODOO_DEFAULT_PASSWORD` | `runodoo123` | Initial admin password on first boot |
 | `RUNODOO_NETWORK` | `runodoo-net` | Docker bridge network shared by RunOdoo, Nginx, Odoo, and PostgreSQL |
 | `RUNODOO_NGINX_CONTAINER` | `runodoo-nginx` | Managed Nginx reverse proxy container name |
@@ -145,7 +142,6 @@ RunOdoo stores all persistent state, instance data, and proxy/SSL configs under 
 ├── config/state.json       # Control panel settings, instances, addons, and backup metadata
 ├── instances/<name>/       # Per-instance odoo.conf, filestore data, and extra-addons
 ├── addons/                 # Cloned Git repositories and uploaded addon ZIPs
-├── recommended-addons/     # Built-in recommended addons synced from ./addons
 ├── backups/                # Saved .zip backup archives
 ├── nginx/conf.d/           # Auto-generated Nginx virtual host configs
 ├── certbot/                # Let's Encrypt webroot challenges and SSL certificates
@@ -163,6 +159,5 @@ RunOdoo stores all persistent state, instance data, and proxy/SSL configs under 
 ├── frontend/               # React 19 + TypeScript + Vite + Tailwind CSS v4 + xterm.js
 ├── Dockerfile              # Multi-stage build (Node -> Go -> Alpine runtime)
 ├── docker-compose.yml      # Docker Compose stack for RunOdoo
-├── install-runodoo.sh      # Automated installer for Google COS & standard Linux
-└── addons/                 # Built-in Recommended Addons catalog (selectively mounted per instance)
+└── install-runodoo.sh      # Automated installer for Google COS & standard Linux
 ```

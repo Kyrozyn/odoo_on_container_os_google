@@ -1,12 +1,11 @@
 import React, { useEffect, useState } from 'react'
-import { GitBranch, Loader2, Package, RefreshCw, Sparkles, Trash2, Upload } from 'lucide-react'
+import { GitBranch, Loader2, Package, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { api } from '../api/client'
-import type { AddonModule, AddonRepo, OdooInstance } from '../types'
+import type { AddonRepo, OdooInstance } from '../types'
 import { Modal } from '../components/UI'
 
 export function Addons({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
   const [repos, setRepos] = useState<AddonRepo[]>([])
-  const [recommended, setRecommended] = useState<AddonModule[]>([])
   const [instances, setInstances] = useState<OdooInstance[]>([])
   const [loading, setLoading] = useState(true)
   const [showGit, setShowGit] = useState(false)
@@ -27,13 +26,11 @@ export function Addons({ notify }: { notify: (msg: string, type?: 'success' | 'e
   const load = async () => {
     setLoading(true)
     try {
-      const [r, rec, insts] = await Promise.all([
+      const [r, insts] = await Promise.all([
         api.listAddons(),
-        api.listRecommendedAddons(),
         api.listInstances(),
       ])
       setRepos(Array.isArray(r) ? r : [])
-      setRecommended(Array.isArray(rec) ? rec : [])
       setInstances(Array.isArray(insts) ? insts : [])
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading addons', 'error')
@@ -112,33 +109,6 @@ export function Addons({ notify }: { notify: (msg: string, type?: 'success' | 'e
           </button>
         </div>
       </div>
-
-      {recommended.length > 0 && (
-        <div className="rounded-xl border border-purple-200 bg-purple-50/40 p-5 space-y-3">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-[#714B67]" />
-            <div>
-              <h2 className="text-base font-bold text-slate-900">
-                Recommended Addons ({recommended.length} modules)
-              </h2>
-              <p className="text-xs text-slate-600">
-                Koleksi modul bawaan dari folder <code className="bg-white px-1 rounded">addons/</code>. Bisa dipilih secara selektif saat membuat atau mengedit instance Odoo.
-              </p>
-            </div>
-          </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {recommended.map((m) => (
-              <div key={m.relPath} className="rounded-lg border border-purple-200/80 bg-white p-3 text-xs">
-                <div className="font-semibold text-slate-900 truncate">{m.name}</div>
-                <div className="mt-0.5 font-mono text-[11px] text-[#714B67] truncate">
-                  {m.technicalName} {m.version ? `• v${m.version}` : ''}
-                </div>
-                {m.summary && <p className="mt-1 text-[11px] text-slate-500 line-clamp-2">{m.summary}</p>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
 
       <div className="space-y-4">
         {repos.map((repo) => {

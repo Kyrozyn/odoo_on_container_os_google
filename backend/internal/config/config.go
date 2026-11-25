@@ -7,38 +7,32 @@ import (
 
 // Config holds runtime configuration for RunOdoo.
 type Config struct {
-	Port                     string
-	DataDir                  string
-	HostDataDir              string // Host path mapped to DataDir (for Docker bind mounts when running inside a container)
-	RecommendedAddonsDir     string
-	HostRecommendedAddonsDir string
-	DockerSocket             string
-	DockerNetwork            string
-	NginxContainer           string
-	SharedPGName             string
-	StaticDir                string
-	DefaultPassword          string
+	Port            string
+	DataDir         string
+	HostDataDir     string // Host path mapped to DataDir (for Docker bind mounts when running inside a container)
+	DockerSocket    string
+	DockerNetwork   string
+	NginxContainer  string
+	SharedPGName    string
+	StaticDir       string
+	DefaultPassword string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
 func Load() *Config {
 	dataDir := getEnv("RUNODOO_DATA_DIR", "/var/runodoo")
 	hostDataDir := getEnv("RUNODOO_HOST_DATA_DIR", dataDir)
-	recAddonsDir := getEnv("RUNODOO_RECOMMENDED_ADDONS_DIR", filepath.Join(dataDir, "recommended-addons"))
-	hostRecAddonsDir := getEnv("RUNODOO_HOST_RECOMMENDED_ADDONS_DIR", filepath.Join(hostDataDir, "recommended-addons"))
 
 	return &Config{
-		Port:                     getEnv("RUNODOO_PORT", "3000"),
-		DataDir:                  dataDir,
-		HostDataDir:              hostDataDir,
-		RecommendedAddonsDir:     recAddonsDir,
-		HostRecommendedAddonsDir: hostRecAddonsDir,
-		DockerSocket:             getEnv("DOCKER_SOCKET", "/var/run/docker.sock"),
-		DockerNetwork:            getEnv("RUNODOO_NETWORK", "runodoo-net"),
-		NginxContainer:           getEnv("RUNODOO_NGINX_CONTAINER", "runodoo-nginx"),
-		SharedPGName:             getEnv("RUNODOO_SHARED_PG_CONTAINER", "runodoo-postgres-shared"),
-		StaticDir:                getEnv("RUNODOO_STATIC_DIR", "./static"),
-		DefaultPassword:          getEnv("RUNODOO_DEFAULT_PASSWORD", "runodoo123"),
+		Port:            getEnv("RUNODOO_PORT", "3000"),
+		DataDir:         dataDir,
+		HostDataDir:     hostDataDir,
+		DockerSocket:    getEnv("DOCKER_SOCKET", "/var/run/docker.sock"),
+		DockerNetwork:   getEnv("RUNODOO_NETWORK", "runodoo-net"),
+		NginxContainer:  getEnv("RUNODOO_NGINX_CONTAINER", "runodoo-nginx"),
+		SharedPGName:    getEnv("RUNODOO_SHARED_PG_CONTAINER", "runodoo-postgres-shared"),
+		StaticDir:       getEnv("RUNODOO_STATIC_DIR", "./static"),
+		DefaultPassword: getEnv("RUNODOO_DEFAULT_PASSWORD", "runodoo123"),
 	}
 }
 
@@ -96,7 +90,6 @@ func (c *Config) EnsureDirs() error {
 		filepath.Join(c.DataDir, "config"),
 		c.InstancesDir(),
 		c.AddonsDir(),
-		c.RecommendedAddonsDir,
 		c.BackupsDir(),
 		c.NginxConfDir(),
 		c.CertbotWebroot(),

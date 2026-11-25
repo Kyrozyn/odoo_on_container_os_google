@@ -44,10 +44,9 @@ type CreateInstanceRequest struct {
 	HTTPPort         int                `json:"httpPort,omitempty"`
 	ExposePort       bool               `json:"exposePort"`
 	UseRootSubdomain bool               `json:"useRootSubdomain"`
-	CustomDomain      string                 `json:"customDomain,omitempty"`
-	AddonRepoIDs      []string               `json:"addonRepoIds,omitempty"`
-	RecommendedAddons []string               `json:"recommendedAddons,omitempty"`
-	EnvVars           map[string]string      `json:"envVars,omitempty"`
+	CustomDomain     string                 `json:"customDomain,omitempty"`
+	AddonRepoIDs     []string               `json:"addonRepoIds,omitempty"`
+	EnvVars          map[string]string      `json:"envVars,omitempty"`
 	Resources         *models.ResourceConfig `json:"resources,omitempty"`
 }
 
@@ -57,10 +56,9 @@ type UpdateInstanceRequest struct {
 	HTTPPort          *int                   `json:"httpPort,omitempty"`
 	UseRootSubdomain  *bool                  `json:"useRootSubdomain,omitempty"`
 	Domains           []models.DomainConfig  `json:"domains,omitempty"`
-	AdminPassword     *string                `json:"adminPassword,omitempty"`
-	AddonRepoIDs      []string               `json:"addonRepoIds,omitempty"`
-	RecommendedAddons []string               `json:"recommendedAddons,omitempty"`
-	EnvVars           map[string]string      `json:"envVars,omitempty"`
+	AdminPassword    *string                `json:"adminPassword,omitempty"`
+	AddonRepoIDs     []string               `json:"addonRepoIds,omitempty"`
+	EnvVars          map[string]string      `json:"envVars,omitempty"`
 	ConfOptions       map[string]string      `json:"confOptions,omitempty"`
 	ResetConfOptions  bool                   `json:"resetConfOptions,omitempty"`
 	CustomConf        *string                `json:"customConf,omitempty"`
@@ -167,37 +165,32 @@ func (m *Manager) CreateInstance(ctx context.Context, req CreateInstanceRequest)
 	if addonIDs == nil {
 		addonIDs = []string{}
 	}
-	recAddons := req.RecommendedAddons
-	if recAddons == nil {
-		recAddons = []string{}
-	}
 
 	now := time.Now()
 	inst := models.OdooInstance{
-		ID:                randomHex(8),
-		Name:              name,
-		Version:           req.Version,
-		Image:             image,
-		ContainerName:     "runodoo-app-" + name,
-		HTTPPort:          httpPort,
-		LongpollingPort:   lpPort,
-		ExposePort:        req.ExposePort,
-		Domains:           domains,
-		UseRootSubdomain:  req.UseRootSubdomain,
-		DBMode:            dbMode,
-		DBContainerName:   dbContainer,
-		DBHost:            dbContainer,
-		DBPort:            5432,
-		DBUser:            dbUser,
-		DBPassword:        dbPass,
-		DefaultDBName:     strings.TrimSpace(req.DefaultDBName),
-		AdminPassword:     adminPass,
-		AddonRepoIDs:      addonIDs,
-		RecommendedAddons: recAddons,
-		EnvVars:           envVars,
-		Resources:         res,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		ID:               randomHex(8),
+		Name:             name,
+		Version:          req.Version,
+		Image:            image,
+		ContainerName:    "runodoo-app-" + name,
+		HTTPPort:         httpPort,
+		LongpollingPort:  lpPort,
+		ExposePort:       req.ExposePort,
+		Domains:          domains,
+		UseRootSubdomain: req.UseRootSubdomain,
+		DBMode:           dbMode,
+		DBContainerName:  dbContainer,
+		DBHost:           dbContainer,
+		DBPort:           5432,
+		DBUser:           dbUser,
+		DBPassword:       dbPass,
+		DefaultDBName:    strings.TrimSpace(req.DefaultDBName),
+		AdminPassword:    adminPass,
+		AddonRepoIDs:     addonIDs,
+		EnvVars:          envVars,
+		Resources:        res,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 
 	// Save instance immediately so UI can navigate and track live deployment progress
@@ -255,9 +248,6 @@ func (m *Manager) runInitialDeploy(inst models.OdooInstance) {
 		m.tracker.Fail(inst.ID, fmt.Errorf("failed writing instance config: %w", err))
 		return
 	}
-	if len(inst.RecommendedAddons) > 0 {
-		m.tracker.Log(inst.ID, fmt.Sprintf("Selected %d recommended addon(s)", len(inst.RecommendedAddons)))
-	}
 
 	// 4. Pull & start Odoo container with live progress
 	if err := m.deployContainerWithProgress(ctx, inst); err != nil {
@@ -279,7 +269,7 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 	// Pre-flight check: detect removed addons and block if any of their modules are still installed in Odoo
 	var removedModules []string
 	if existing, ok := m.store.FindInstance(idOrName); ok {
-		removedModules = m.computeRemovedModules(existing, req.AddonRepoIDs, req.RecommendedAddons)
+		removedModules = m.computeRemovedModules(existing, req.AddonRepoIDs)
 		if len(removedModules) > 0 {
 			installedByDB, err := m.db.FindInstalledModules(ctx, existing, removedModules)
 			if err == nil && len(installedByDB) > 0 {
@@ -336,12 +326,6 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 						delete(inst.ConfOptions, "addons_path")
 					}
 				}
-				if req.RecommendedAddons != nil {
-					inst.RecommendedAddons = req.RecommendedAddons
-					if inst.ConfOptions != nil {
-						delete(inst.ConfOptions, "addons_path")
-					}
-				}
 				if req.EnvVars != nil {
 					inst.EnvVars = req.EnvVars
 				}
@@ -349,7 +333,7 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 					inst.ConfOptions = map[string]string{}
 				} else if req.ConfOptions != nil {
 					// Avoid pinning addons_path as a static override if it matches the auto-computed value
-					autoAddonsPath, _ := m.addons.ComputeAddonsPath(inst.AddonRepoIDs, inst.RecommendedAddons)
+					autoAddonsPath, _ := m.addons.ComputeAddonsPath(inst.AddonRepoIDs)
 					cleaned := make(map[string]string, len(req.ConfOptions))
 					for k, v := range req.ConfOptions {
 						if k == "addons_path" && strings.TrimSpace(v) == autoAddonsPath {
@@ -383,7 +367,7 @@ func (m *Manager) UpdateInstance(ctx context.Context, idOrName string, req Updat
 		return nil, err
 	}
 	if req.Redeploy || portChanged {
-		shouldUpdateApps := req.AddonRepoIDs != nil || req.RecommendedAddons != nil
+		shouldUpdateApps := req.AddonRepoIDs != nil
 		m.tracker.Start(updated.ID, fmt.Sprintf("Redeploying %s...", updated.Name))
 		go func(inst models.OdooInstance) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
@@ -784,9 +768,9 @@ PYEOF`, db.Name, mode)
 	return results, allOut.String(), nil
 }
 
-// computeRemovedModules returns technical module names belonging to addon repos or recommended addons
+// computeRemovedModules returns technical module names belonging to addon repos
 // that are present in `existing` but removed in the incoming update request.
-func (m *Manager) computeRemovedModules(existing models.OdooInstance, nextRepoIDs []string, nextRecs []string) []string {
+func (m *Manager) computeRemovedModules(existing models.OdooInstance, nextRepoIDs []string) []string {
 	removedSet := map[string]bool{}
 	st := m.store.Get()
 
@@ -808,28 +792,6 @@ func (m *Manager) computeRemovedModules(existing models.OdooInstance, nextRepoID
 						}
 					}
 				}
-			}
-		}
-	}
-
-	if nextRecs != nil {
-		nextRecMap := make(map[string]bool, len(nextRecs))
-		for _, r := range nextRecs {
-			nextRecMap[r] = true
-		}
-		allRecs := m.addons.ListRecommendedAddons()
-		recByKey := map[string]string{}
-		for _, mod := range allRecs {
-			recByKey[mod.RelPath] = mod.TechnicalName
-			recByKey[mod.TechnicalName] = mod.TechnicalName
-		}
-		for _, oldRec := range existing.RecommendedAddons {
-			tech := recByKey[oldRec]
-			if tech == "" {
-				tech = filepath.Base(oldRec)
-			}
-			if !nextRecMap[oldRec] && !nextRecMap[tech] {
-				removedSet[tech] = true
 			}
 		}
 	}
@@ -1224,7 +1186,7 @@ var StandardOdooConfKeys = []string{
 
 // EffectiveConfOptions returns the merged map of default odoo.conf options + user overrides.
 func (m *Manager) EffectiveConfOptions(inst models.OdooInstance) map[string]string {
-	addonsPath, _ := m.addons.ComputeAddonsPath(inst.AddonRepoIDs, inst.RecommendedAddons)
+	addonsPath, _ := m.addons.ComputeAddonsPath(inst.AddonRepoIDs)
 	opts := map[string]string{
 		"http_interface":    "0.0.0.0",
 		"http_port":         "8069",
@@ -1302,7 +1264,7 @@ func (m *Manager) deployContainerWithProgress(ctx context.Context, inst models.O
 	// Remove existing container if redeploying
 	_ = m.docker.RemoveContainer(ctx, inst.ContainerName, true)
 
-	_, addonBinds := m.addons.ComputeAddonsPath(inst.AddonRepoIDs, inst.RecommendedAddons)
+	_, addonBinds := m.addons.ComputeAddonsPath(inst.AddonRepoIDs)
 	hostBase := filepath.Join(m.cfg.HostInstancesDir(), inst.Name)
 	binds := []string{
 		fmt.Sprintf("%s/config/odoo.conf:/etc/odoo/odoo.conf:ro", hostBase),

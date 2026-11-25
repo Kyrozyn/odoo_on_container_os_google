@@ -249,19 +249,9 @@ func (m *Manager) DeleteRepo(id string) error {
 	return nil
 }
 
-// ListRecommendedAddons scans the built-in recommended addons directory (e.g. repo's addons/)
-// and returns all discovered Odoo modules that users can selectively install per instance.
-func (m *Manager) ListRecommendedAddons() []models.AddonModule {
-	mods := ScanModules(m.cfg.RecommendedAddonsDir)
-	if mods == nil {
-		return []models.AddonModule{}
-	}
-	return mods
-}
-
 // ComputeAddonsPath calculates the container-side Odoo `addons_path` and host bind mounts
-// for attached AddonRepo IDs AND selectively chosen recommended addons.
-func (m *Manager) ComputeAddonsPath(repoIDs []string, recommendedSelected []string) (addonsPath string, binds []string) {
+// for attached AddonRepo IDs.
+func (m *Manager) ComputeAddonsPath(repoIDs []string) (addonsPath string, binds []string) {
 	st := m.store.Get()
 	repoMap := make(map[string]models.AddonRepo, len(st.AddonRepos))
 	for _, r := range st.AddonRepos {
@@ -306,27 +296,6 @@ func (m *Manager) ComputeAddonsPath(repoIDs []string, recommendedSelected []stri
 			}
 			return nil
 		})
-	}
-
-	// Mount ONLY the specifically selected recommended addons into /mnt/recommended-addons/<technicalName>
-	if len(recommendedSelected) > 0 {
-		selectedSet := make(map[string]bool, len(recommendedSelected))
-		for _, sel := range recommendedSelected {
-			selectedSet[strings.TrimSpace(sel)] = true
-		}
-		available := m.ListRecommendedAddons()
-		mountedAny := false
-		for _, mod := range available {
-			if selectedSet[mod.TechnicalName] || selectedSet[mod.RelPath] {
-				hostModPath := filepath.Join(m.cfg.HostRecommendedAddonsDir, filepath.FromSlash(mod.RelPath))
-				containerModPath := "/mnt/recommended-addons/" + mod.TechnicalName
-				binds = append(binds, fmt.Sprintf("%s:%s:ro", hostModPath, containerModPath))
-				mountedAny = true
-			}
-		}
-		if mountedAny {
-			pathsSet["/mnt/recommended-addons"] = true
-		}
 	}
 
 	ordered := make([]string, 0, len(pathsSet))

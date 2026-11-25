@@ -40,46 +40,6 @@ func TestScanModules(t *testing.T) {
 	}
 }
 
-func TestRecommendedAddonsSelectiveMount(t *testing.T) {
-	dir := t.TempDir()
-	recDir := filepath.Join(dir, "recommended-addons")
-	for _, mod := range []string{"om_theme_lite", "execute_sql"} {
-		p := filepath.Join(recDir, mod)
-		if err := os.MkdirAll(p, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(p, "__manifest__.py"), []byte("{'name': '"+mod+"'}"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	cfg := &config.Config{
-		DataDir:                  dir,
-		HostDataDir:              dir,
-		RecommendedAddonsDir:     recDir,
-		HostRecommendedAddonsDir: recDir,
-	}
-	st, err := store.New(filepath.Join(dir, "state.json"), "pass123", "pg")
-	if err != nil {
-		t.Fatal(err)
-	}
-	mgr := NewManager(cfg, st)
-
-	list := mgr.ListRecommendedAddons()
-	if len(list) != 2 {
-		t.Fatalf("expected 2 recommended addons, got %d", len(list))
-	}
-
-	// Select only om_theme_lite
-	pathStr, binds := mgr.ComputeAddonsPath(nil, []string{"om_theme_lite"})
-	if !strings.Contains(pathStr, "/mnt/recommended-addons") {
-		t.Fatalf("expected /mnt/recommended-addons in addons_path, got %s", pathStr)
-	}
-	if len(binds) != 1 || !strings.HasSuffix(binds[0], ":/mnt/recommended-addons/om_theme_lite:ro") {
-		t.Fatalf("expected single selective bind for om_theme_lite, got %+v", binds)
-	}
-}
-
 func TestUploadZipRootManifestWrapsInValidPythonModule(t *testing.T) {
 	dir := t.TempDir()
 	zipPath := filepath.Join(dir, "sample.zip")
@@ -96,10 +56,8 @@ func TestUploadZipRootManifestWrapsInValidPythonModule(t *testing.T) {
 	zf.Close()
 
 	cfg := &config.Config{
-		DataDir:                  dir,
-		HostDataDir:              dir,
-		RecommendedAddonsDir:     filepath.Join(dir, "recommended-addons"),
-		HostRecommendedAddonsDir: filepath.Join(dir, "recommended-addons"),
+		DataDir:     dir,
+		HostDataDir: dir,
 	}
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)
@@ -118,7 +76,7 @@ func TestUploadZipRootManifestWrapsInValidPythonModule(t *testing.T) {
 		t.Fatalf("expected wrapped python module name my_custom_mod, got %+v", repo.Modules)
 	}
 
-	addonsPath, binds := mgr.ComputeAddonsPath([]string{repo.ID}, nil)
+	addonsPath, binds := mgr.ComputeAddonsPath([]string{repo.ID})
 	if !strings.Contains(addonsPath, "/mnt/extra-addons/my-custom-mod") {
 		t.Fatalf("expected /mnt/extra-addons/my-custom-mod in addonsPath, got %s", addonsPath)
 	}
@@ -141,10 +99,8 @@ func TestUploadZipNormalizesGitHubBranchSuffix(t *testing.T) {
 	zf.Close()
 
 	cfg := &config.Config{
-		DataDir:                  dir,
-		HostDataDir:              dir,
-		RecommendedAddonsDir:     filepath.Join(dir, "recommended-addons"),
-		HostRecommendedAddonsDir: filepath.Join(dir, "recommended-addons"),
+		DataDir:     dir,
+		HostDataDir: dir,
 	}
 	if err := cfg.EnsureDirs(); err != nil {
 		t.Fatal(err)

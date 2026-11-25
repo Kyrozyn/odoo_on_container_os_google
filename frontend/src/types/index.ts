@@ -45,7 +45,6 @@ export interface OdooInstance {
   defaultDbName: string
   adminPassword: string
   addonRepoIds: string[]
-  recommendedAddons: string[]
   envVars: Record<string, string>
   customConf: string
   resources: ResourceConfig

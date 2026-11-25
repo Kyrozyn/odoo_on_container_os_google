@@ -290,7 +290,6 @@ export const api = {
 
   // Addons
   listAddons: () => request<AddonRepo[]>('/api/addons'),
-  listRecommendedAddons: () => request<AddonModule[]>('/api/addons/recommended'),
   cloneAddon: (payload: { name: string; gitUrl: string; branch?: string; token?: string }) =>
     request<AddonRepo>('/api/addons/git', { method: 'POST', body: JSON.stringify(payload) }),
   uploadAddonZip: (name: string, file: File) => {

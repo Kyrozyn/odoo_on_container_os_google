@@ -44,8 +44,6 @@ export function InstanceDetail({
   const [tab, setTab] = useState<Tab>('overview')
   const [dbs, setDbs] = useState<DatabaseInfo[]>([])
   const [allAddons, setAllAddons] = useState<AddonRepo[]>([])
-  const [recommendedAddons, setRecommendedAddons] = useState<AddonModule[]>([])
-  const [selectedRecs, setSelectedRecs] = useState<string[]>([])
   const [logs, setLogs] = useState('')
   const [confRows, setConfRows] = useState<{ key: string; value: string }[]>([])
   const [bulkConfMode, setBulkConfMode] = useState(false)
@@ -96,7 +94,6 @@ export function InstanceDetail({
       const data = await api.getInstance(instanceId)
       setInst(data)
       setCustomConf(data.customConf || '')
-      setSelectedRecs(data.recommendedAddons || [])
       if (data.status === 'running') {
         api.instanceStats(instanceId).then(setStats).catch(() => {})
       }
@@ -167,7 +164,6 @@ export function InstanceDetail({
       api.listInstanceDatabases(inst.id).then(setDbs).catch(() => setDbs([]))
     } else if (tab === 'addons') {
       api.listAddons().then(setAllAddons).catch(() => {})
-      api.listRecommendedAddons().then(setRecommendedAddons).catch(() => {})
       api.listInstanceDatabases(inst.id).then((list) => {
         setDbs(list)
         if (list.length > 0 && !upgradeDb) setUpgradeDb(list[0].name)
@@ -1065,72 +1061,6 @@ export function InstanceDetail({
 
       {tab === 'addons' && (
         <div className="space-y-4">
-          {recommendedAddons.length > 0 && (
-            <div className="rounded-xl border border-purple-200 bg-white p-5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-semibold text-[#714B67]">Recommended Addons</h3>
-                  <p className="text-xs text-slate-500">
-                    Centang modul rekomendasi yang ingin dipasang ke instance ini, lalu klik Save &amp; Redeploy.
-                  </p>
-                </div>
-                <button
-                  disabled={busy}
-                  onClick={async () => {
-                    setBusyAction('save-recs')
-                    try {
-                      await api.updateInstance(inst.id, { recommendedAddons: selectedRecs, redeploy: true })
-                      notify('Redeployment started...')
-                      setHideDeployCard(false)
-                      await refreshDeployStatus()
-                      loadInstance()
-                    } catch (err) {
-                      notify(err instanceof Error ? err.message : 'Failed updating recommended addons', 'error')
-                    } finally {
-                      setBusyAction(null)
-                    }
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
-                >
-                  {busyAction === 'save-recs' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-                  {busyAction === 'save-recs' ? 'Saving...' : `Save & Redeploy (${selectedRecs.length})`}
-                </button>
-              </div>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                {recommendedAddons.map((mod) => {
-                  const checked = selectedRecs.includes(mod.relPath) || selectedRecs.includes(mod.technicalName)
-                  return (
-                    <label
-                      key={mod.relPath}
-                      className={`flex items-start gap-2 rounded-lg border p-2.5 text-xs cursor-pointer ${
-                        checked ? 'border-[#714B67] bg-purple-50/40' : 'border-slate-200 hover:bg-slate-50'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={checked}
-                        onChange={() =>
-                          setSelectedRecs((prev) =>
-                            checked
-                              ? prev.filter((x) => x !== mod.relPath && x !== mod.technicalName)
-                              : [...prev, mod.relPath]
-                          )
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="font-semibold text-slate-900 truncate">{mod.name}</div>
-                        <div className="font-mono text-[10px] text-slate-500 truncate">
-                          {mod.technicalName} {mod.version ? `• v${mod.version}` : ''}
-                        </div>
-                      </div>
-                    </label>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-
           <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -2043,7 +1973,7 @@ export function InstanceDetail({
                   </span>
                 </div>
                 <p className="text-slate-500">
-                  Hanya scan &amp; hapus record modul custom/extra/recommended yang sudah hilang dari disk. Addons bawaan
+                  Hanya scan &amp; hapus record modul custom/extra yang sudah hilang dari disk. Addons bawaan
                   Odoo (termasuk daftar modul resmi/Enterprise) tidak disentuh.
                 </p>
               </div>

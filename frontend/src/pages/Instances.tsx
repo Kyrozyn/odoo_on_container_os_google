@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { ExternalLink, Loader2, Play, Plus, RefreshCw, RotateCw, Square, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
-import type { AddonModule, AddonRepo, DBMode, OdooInstance, OdooVersion, OdooVersionInfo } from '../types'
+import type { AddonRepo, DBMode, OdooInstance, OdooVersion, OdooVersionInfo } from '../types'
 import { Modal, StatusBadge } from '../components/UI'
 
 export function Instances({
@@ -14,7 +14,6 @@ export function Instances({
   const [instances, setInstances] = useState<OdooInstance[]>([])
   const [versions, setVersions] = useState<OdooVersionInfo[]>([])
   const [addons, setAddons] = useState<AddonRepo[]>([])
-  const [recommendedAddons, setRecommendedAddons] = useState<AddonModule[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -34,21 +33,18 @@ export function Instances({
   const [useRootSubdomain, setUseRootSubdomain] = useState(true)
   const [customDomain, setCustomDomain] = useState('')
   const [selectedAddons, setSelectedAddons] = useState<string[]>([])
-  const [selectedRecommended, setSelectedRecommended] = useState<string[]>([])
 
   const load = async () => {
     setLoading(true)
     try {
-      const [insts, vers, ads, recs] = await Promise.all([
+      const [insts, vers, ads] = await Promise.all([
         api.listInstances(),
         api.versions(),
         api.listAddons(),
-        api.listRecommendedAddons(),
       ])
       setInstances(Array.isArray(insts) ? insts : [])
       setVersions(Array.isArray(vers) ? vers : [])
       setAddons(Array.isArray(ads) ? ads : [])
-      setRecommendedAddons(Array.isArray(recs) ? recs : [])
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed loading instances', 'error')
     } finally {
@@ -75,7 +71,6 @@ export function Instances({
         useRootSubdomain,
         customDomain: customDomain || undefined,
         addonRepoIds: selectedAddons,
-        recommendedAddons: selectedRecommended,
       })
       notify(`Deployment started for "${created.name}"!`)
       setShowCreate(false)
@@ -84,7 +79,6 @@ export function Instances({
       setAdminPassword('')
       setCustomDomain('')
       setSelectedAddons([])
-      setSelectedRecommended([])
       onSelectInstance(created.id)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed creating instance', 'error')
@@ -405,69 +399,6 @@ export function Instances({
               />
             </div>
           </div>
-
-          {recommendedAddons.length > 0 && (
-            <div className="rounded-lg border border-purple-200 bg-purple-50/40 p-3.5 space-y-2.5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <label className="block text-xs font-semibold text-[#714B67]">
-                    Recommended Addons (Opsional — pilih yang ingin di-install)
-                  </label>
-                  <p className="text-[11px] text-slate-500">
-                    Hanya modul yang dicentang yang akan di-mount ke container Odoo ini.
-                  </p>
-                </div>
-                <div className="flex gap-2 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRecommended(recommendedAddons.map((m) => m.relPath))}
-                    className="font-medium text-[#714B67] hover:underline cursor-pointer"
-                  >
-                    Select All
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRecommended([])}
-                    className="text-slate-500 hover:underline cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              <div className="max-h-44 overflow-y-auto grid grid-cols-1 gap-1.5 sm:grid-cols-2 pr-1">
-                {recommendedAddons.map((mod) => {
-                  const checked = selectedRecommended.includes(mod.relPath)
-                  return (
-                    <label
-                      key={mod.relPath}
-                      className={`flex items-start gap-2 rounded-lg border p-2 text-xs cursor-pointer transition ${
-                        checked
-                          ? 'border-[#714B67] bg-white shadow-2xs'
-                          : 'border-slate-200 bg-white/70 hover:bg-white'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={checked}
-                        onChange={() =>
-                          setSelectedRecommended((prev) =>
-                            checked ? prev.filter((x) => x !== mod.relPath) : [...prev, mod.relPath]
-                          )
-                        }
-                      />
-                      <div className="min-w-0">
-                        <div className="font-semibold text-slate-800 truncate">{mod.name}</div>
-                        <div className="font-mono text-[10px] text-slate-500 truncate">
-                          {mod.technicalName} {mod.version ? `• v${mod.version}` : ''}
-                        </div>
-                      </div>
-                    </label>
-                  )
-                })}
-              </div>
-            </div>
-          )}
 
           {addons.length > 0 && (
             <div>
