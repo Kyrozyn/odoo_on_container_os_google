@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Archive, Calendar, CheckCircle2, Clock, Download, Loader2, Plus, RotateCcw, Trash2, Upload, XCircle } from 'lucide-react'
 import { api } from '../api/client'
-import type { BackupJob, BackupRecord, BackupSchedule, OdooInstance } from '../types'
+import type { BackupJob, BackupRecord, BackupSchedule, DatabaseInfo, OdooInstance } from '../types'
 import { formatBytes, Modal } from '../components/UI'
 
 export function Backups({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
@@ -9,6 +9,8 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
   const [jobs, setJobs] = useState<BackupJob[]>([])
   const [schedules, setSchedules] = useState<BackupSchedule[]>([])
   const [instances, setInstances] = useState<OdooInstance[]>([])
+  const [instanceDbs, setInstanceDbs] = useState<DatabaseInfo[]>([])
+  const [loadingDbs, setLoadingDbs] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
   const [showUpload, setShowUpload] = useState(false)
   const [showSched, setShowSched] = useState(false)
@@ -48,6 +50,34 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
   useEffect(() => {
     load()
   }, [])
+
+  useEffect(() => {
+    if (!instId) {
+      setInstanceDbs([])
+      return
+    }
+    let cancelled = false
+    setLoadingDbs(true)
+    api
+      .listInstanceDatabases(instId)
+      .then((dbs) => {
+        if (cancelled) return
+        const safe = Array.isArray(dbs) ? dbs : []
+        setInstanceDbs(safe)
+        setDbName((prev) => (safe.some((d) => d.name === prev) ? prev : safe[0]?.name || ''))
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setInstanceDbs([])
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDbs(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [instId])
 
   useEffect(() => {
     const hasActive = jobs.some((j) => j.status === 'queued' || j.status === 'running')
@@ -151,7 +181,10 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
         <div className="flex flex-wrap gap-2">
           <button
             disabled={instances.length === 0}
-            onClick={() => setShowSched(true)}
+            onClick={() => {
+              if (!dbName && instanceDbs.length > 0) setDbName(instanceDbs[0].name)
+              setShowSched(true)
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
           >
             <Calendar className="h-4 w-4" /> Schedule Cron
@@ -165,7 +198,10 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
           </button>
           <button
             disabled={instances.length === 0}
-            onClick={() => setShowCreate(true)}
+            onClick={() => {
+              if (!dbName && instanceDbs.length > 0) setDbName(instanceDbs[0].name)
+              setShowCreate(true)
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] cursor-pointer"
           >
             <Plus className="h-4 w-4" /> Create Backup
@@ -366,10 +402,24 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
           <select value={instId} onChange={(e) => setInstId(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
             {instances.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
           </select>
-          <input type="text" required value={dbName} onChange={(e) => setDbName(e.target.value)} placeholder="Database name" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+          <select
+            required
+            disabled={loadingDbs || instanceDbs.length === 0}
+            value={dbName}
+            onChange={(e) => setDbName(e.target.value)}
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-500"
+          >
+            {loadingDbs && <option value="">Loading databases...</option>}
+            {!loadingDbs && instanceDbs.length === 0 && <option value="">No databases found for this instance</option>}
+            {!loadingDbs && instanceDbs.map((d) => (
+              <option key={d.name} value={d.name}>
+                {d.name} ({d.sizePretty})
+              </option>
+            ))}
+          </select>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setShowCreate(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm cursor-pointer">Cancel</button>
-            <button type="submit" disabled={busy} className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white cursor-pointer">{busy ? 'Backing up...' : 'Create Backup'}</button>
+            <button type="submit" disabled={busy || loadingDbs || !dbName} className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 cursor-pointer">{busy ? 'Queueing...' : 'Create Backup'}</button>
           </div>
         </form>
       </Modal>
@@ -406,7 +456,21 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
           <select value={instId} onChange={(e) => setInstId(e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm">
             {instances.map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
           </select>
-          <input type="text" required value={dbName} onChange={(e) => setDbName(e.target.value)} placeholder="Database name" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+          <select
+            required
+            disabled={loadingDbs || instanceDbs.length === 0}
+            value={dbName}
+            onChange={(e) => setDbName(e.target.value)}
+            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-50 disabled:text-slate-500"
+          >
+            {loadingDbs && <option value="">Loading databases...</option>}
+            {!loadingDbs && instanceDbs.length === 0 && <option value="">No databases found for this instance</option>}
+            {!loadingDbs && instanceDbs.map((d) => (
+              <option key={d.name} value={d.name}>
+                {d.name} ({d.sizePretty})
+              </option>
+            ))}
+          </select>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-xs text-slate-600">Cron Expression</label>
