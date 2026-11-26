@@ -6,6 +6,16 @@ Built with a **Go** backend (single lightweight static binary with minimal RAM f
 
 ---
 
+## Screenshots
+
+### Dashboard
+![RunOdoo Dashboard](images/ss1.png)
+
+### Odoo Instance Deployment & Overview
+![RunOdoo Instance Deployment & Overview](images/ss2.png)
+
+---
+
 ## Key Features
 
 - **Multi-Version Odoo Community (17, 18, 19, 20)**
