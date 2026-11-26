@@ -40,6 +40,23 @@ func (m *Manager) CloneGitRepo(ctx context.Context, name, gitURL, branch, token 
 		return nil, fmt.Errorf("addon repository '%s' already exists", cleanName)
 	}
 
+	gitURL = strings.TrimSpace(gitURL)
+	if gitURL == "" || strings.HasPrefix(gitURL, "-") {
+		return nil, fmt.Errorf("invalid git repository URL")
+	}
+	lowerURL := strings.ToLower(gitURL)
+	if !strings.HasPrefix(lowerURL, "https://") &&
+		!strings.HasPrefix(lowerURL, "http://") &&
+		!strings.HasPrefix(lowerURL, "ssh://") &&
+		!strings.HasPrefix(lowerURL, "git@") {
+		return nil, fmt.Errorf("unsupported git repository URL scheme (use https://, http://, ssh://, or git@)")
+	}
+
+	branch = strings.TrimSpace(branch)
+	if strings.HasPrefix(branch, "-") {
+		return nil, fmt.Errorf("invalid git branch name")
+	}
+
 	cloneURL := gitURL
 	if token != "" && strings.HasPrefix(gitURL, "https://") {
 		cloneURL = strings.Replace(gitURL, "https://", "https://oauth2:"+token+"@", 1)
@@ -49,7 +66,7 @@ func (m *Manager) CloneGitRepo(ctx context.Context, name, gitURL, branch, token 
 	if branch != "" {
 		args = append(args, "-b", branch)
 	}
-	args = append(args, cloneURL, destDir)
+	args = append(args, "--", cloneURL, destDir)
 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.CombinedOutput()

@@ -23,7 +23,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { api, type CleanMissingDBResult, type CleanMissingMode, type PythonEnvInfo } from '../api/client'
-import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DeployProgress, DomainConfig, OdooInstance } from '../types'
+import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DeployProgress, DomainConfig, OdooInstance, PanelSettings } from '../types'
 import { Modal, StatusBadge } from '../components/UI'
 import { CreateDatabaseModal } from '../components/CreateDatabaseModal'
 import { ContainerTerminal } from '../components/ContainerTerminal'
@@ -40,6 +40,7 @@ export function InstanceDetail({
   notify: (msg: string, type?: 'success' | 'error') => void
 }) {
   const [inst, setInst] = useState<OdooInstance | null>(null)
+  const [settings, setSettings] = useState<PanelSettings | null>(null)
   const [stats, setStats] = useState<ContainerStats | null>(null)
   const [tab, setTab] = useState<Tab>('overview')
   const [dbs, setDbs] = useState<DatabaseInfo[]>([])
@@ -123,6 +124,7 @@ export function InstanceDetail({
     setPyError(null)
     loadInstance()
     refreshDeployStatus()
+    api.getSettings().then(setSettings).catch(() => {})
   }, [instanceId])
 
   useEffect(() => {
@@ -160,7 +162,9 @@ export function InstanceDetail({
 
   useEffect(() => {
     if (!inst) return
-    if (tab === 'databases') {
+    if (tab === 'domains') {
+      api.getSettings().then(setSettings).catch(() => {})
+    } else if (tab === 'databases') {
       api.listInstanceDatabases(inst.id).then(setDbs).catch(() => setDbs([]))
     } else if (tab === 'addons') {
       api.listAddons().then(setAllAddons).catch(() => {})
@@ -270,6 +274,31 @@ export function InstanceDetail({
       await loadInstance()
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Failed updating port exposure', 'error')
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const rootDomain = (settings?.rootDomain || '').trim().toLowerCase()
+  const rootSubdomain = rootDomain ? `${inst.name}.${rootDomain}` : ''
+
+  const handleToggleRootSubdomain = async (nextUse: boolean) => {
+    const hasCustomDomains = Boolean(inst.domains && inst.domains.length > 0)
+    if (
+      !nextUse &&
+      !inst.exposePort &&
+      !hasCustomDomains &&
+      !confirm('Direct HTTP Port sedang mati dan tidak ada custom domain lain. Jika Root Subdomain dilepas sekarang, Odoo tidak bisa diakses dari luar. Lanjutkan?')
+    ) {
+      return
+    }
+    setBusyAction('toggle-root-subdomain')
+    try {
+      await api.updateInstance(inst.id, { useRootSubdomain: nextUse, redeploy: false })
+      notify(nextUse ? 'Root subdomain attached and Nginx synced' : 'Root subdomain detached and Nginx synced')
+      await loadInstance()
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Failed updating root subdomain', 'error')
     } finally {
       setBusyAction(null)
     }
@@ -877,6 +906,90 @@ export function InstanceDetail({
                 {busyAction === 'toggle-port' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 {inst.exposePort ? 'Disable Direct Port (Domain Only)' : `Enable Direct Port (:${inst.httpPort})`}
               </button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold text-slate-900">Attach Root Subdomain</h3>
+                  {inst.useRootSubdomain ? (
+                    <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
+                      {rootSubdomain ? `Attached (${rootSubdomain})` : 'Enabled (Root Domain Not Set)'}
+                    </span>
+                  ) : (
+                    <span className="rounded-full border border-slate-200 bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">
+                      Disabled
+                    </span>
+                  )}
+                  {inst.useRootSubdomain && rootSubdomain && inst.rootSubdomainSsl && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
+                      <ShieldCheck className="h-3 w-3" /> SSL Active
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-slate-500">
+                  {rootSubdomain
+                    ? <>Automatically routes <code className="bg-slate-100 px-1 rounded">{rootSubdomain}</code> to this Odoo container via Nginx.</>
+                    : 'Automatically routes <instance>.<rootDomain> to this Odoo container via Nginx once Root Domain is configured in Settings.'}
+                </p>
+                {!rootDomain && (
+                  <p className="text-xs text-amber-700">
+                    Root Domain belum dikonfigurasi di menu Settings.
+                  </p>
+                )}
+                {inst.useRootSubdomain && rootSubdomain && (() => {
+                  const subUrl = `${inst.rootSubdomainSsl ? 'https' : 'http'}://${rootSubdomain}`
+                  return (
+                    <div className="pt-1">
+                      <a
+                        href={subUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          window.open(subUrl, '_blank', 'noopener,noreferrer')
+                        }}
+                        className="inline-flex items-center gap-1.5 font-medium text-indigo-600 hover:underline text-sm cursor-pointer"
+                      >
+                        {subUrl}
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+                  )
+                })()}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {inst.useRootSubdomain && rootSubdomain && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleIssueSsl(rootSubdomain)}
+                    className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60 cursor-pointer"
+                  >
+                    {busyAction === `ssl:${rootSubdomain}` && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    {busyAction === `ssl:${rootSubdomain}`
+                      ? 'Issuing SSL...'
+                      : inst.rootSubdomainSsl
+                      ? 'Renew SSL'
+                      : 'Enable HTTPS (Certbot)'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleToggleRootSubdomain(!inst.useRootSubdomain)}
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-semibold disabled:opacity-60 cursor-pointer ${
+                    inst.useRootSubdomain
+                      ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                      : 'border-indigo-300 bg-indigo-50 text-indigo-800 hover:bg-indigo-100'
+                  }`}
+                >
+                  {busyAction === 'toggle-root-subdomain' && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {inst.useRootSubdomain ? 'Detach Root Subdomain' : 'Attach Root Subdomain'}
+                </button>
+              </div>
             </div>
           </div>
 
