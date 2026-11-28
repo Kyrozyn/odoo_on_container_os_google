@@ -165,6 +165,7 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("POST /api/instances/{id}/monitoring/ssl", s.handleMonitoringSSL)
 	protected.HandleFunc("POST /api/instances/{id}/monitoring/control", s.handleMonitoringControl)
 	protected.HandleFunc("POST /api/instances/{id}/monitoring/resync", s.handleMonitoringResync)
+	protected.HandleFunc("DELETE /api/instances/{id}/monitoring", s.handleMonitoringUninstall)
 
 	mux.Handle("/api/", s.auth.Middleware(protected))
 
@@ -1670,6 +1671,21 @@ func (s *Server) handleMonitoringResync(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	status, err := s.monitoring.Resync(r.Context(), inst)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleMonitoringUninstall(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	removeData := r.URL.Query().Get("removeData") != "false"
+	status, err := s.monitoring.Uninstall(r.Context(), inst, removeData)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

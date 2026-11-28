@@ -491,6 +491,29 @@ func (m *Manager) Resync(ctx context.Context, inst models.OdooInstance) (*Monito
 	return &status, nil
 }
 
+// Uninstall stops and removes Prometheus, Grafana, and PG Exporter containers for an instance.
+func (m *Manager) Uninstall(ctx context.Context, inst models.OdooInstance, removeData bool) (*MonitoringStatus, error) {
+	prom, grafana, pgExp := containerNamesFor(inst)
+	for _, name := range []string{grafana, prom, pgExp} {
+		_ = m.docker.StopContainer(ctx, name, 10)
+		_ = m.docker.RemoveContainer(ctx, name, true)
+	}
+	if removeData {
+		_ = os.RemoveAll(m.instMonDir(inst))
+	}
+	updated, err := m.updateInstanceMonitoring(inst.ID, func(mc *models.MonitoringConfig) {
+		*mc = models.MonitoringConfig{}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if m.proxy != nil {
+		_ = m.proxy.SyncAll(ctx)
+	}
+	status := m.Status(ctx, updated)
+	return &status, nil
+}
+
 func (m *Manager) writeConfigFiles(inst models.OdooInstance) error {
 	base := m.instMonDir(inst)
 	prom, _, _ := containerNamesFor(inst)

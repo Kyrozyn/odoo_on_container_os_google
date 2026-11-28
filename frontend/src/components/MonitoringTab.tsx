@@ -161,6 +161,27 @@ export function MonitoringTab({
     }
   }
 
+  const handleUninstall = async () => {
+    if (
+      !confirm(
+        `Hapus seluruh stack monitoring untuk "${instance.name}" (${status?.config.prometheusContainer}, ${status?.config.grafanaContainer}, ${status?.config.pgExporterContainer}) beserta datanya?`
+      )
+    ) {
+      return
+    }
+    setBusy('uninstall')
+    try {
+      const res = await api.monitoringUninstall(instance.id, true)
+      setStatus(res)
+      setInstallLog('')
+      notify(`Monitoring stack for "${instance.name}" removed!`)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Failed removing monitoring stack', 'error')
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const handleSaveAccess = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy('save-access')
@@ -381,7 +402,7 @@ export function MonitoringTab({
               <h3 className="text-sm font-semibold text-slate-900">Monitoring Stack ({instance.name})</h3>
               <p className="text-xs text-slate-500">Dedicated Prometheus, Grafana &amp; PostgreSQL Exporter</p>
             </div>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <button
                 type="button"
                 disabled={!!busy}
@@ -389,7 +410,16 @@ export function MonitoringTab({
                 className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50 cursor-pointer"
               >
                 {busy === 'resync' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                Re-sync Dashboards &amp; Targets
+                Re-sync
+              </button>
+              <button
+                type="button"
+                disabled={!!busy}
+                onClick={handleUninstall}
+                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-50 cursor-pointer"
+              >
+                {busy === 'uninstall' ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                Remove Stack
               </button>
             </div>
           </div>

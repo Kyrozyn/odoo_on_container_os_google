@@ -427,4 +427,9 @@ export const api = {
     request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/resync`, {
       method: 'POST',
     }),
+  monitoringUninstall: (instanceId: string, removeData = true) =>
+    request<MonitoringStatus>(
+      `/api/instances/${instanceId}/monitoring?removeData=${removeData ? 'true' : 'false'}`,
+      { method: 'DELETE' }
+    ),
 }
