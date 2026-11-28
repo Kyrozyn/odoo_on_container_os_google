@@ -4,6 +4,21 @@ import { api } from '../api/client'
 import type { BackupJob, BackupRecord, BackupSchedule, DatabaseInfo, OdooInstance } from '../types'
 import { formatBytes, Modal } from '../components/UI'
 
+const CRON_TEMPLATES = [
+  { label: 'Every 15 minutes', cron: '*/15 * * * *' },
+  { label: 'Every 30 minutes', cron: '*/30 * * * *' },
+  { label: 'Hourly (at :00)', cron: '0 * * * *' },
+  { label: 'Every 6 hours', cron: '0 */6 * * *' },
+  { label: 'Every 12 hours', cron: '0 */12 * * *' },
+  { label: 'Daily at 02:00', cron: '0 2 * * *' },
+  { label: 'Daily at 00:00 (Midnight)', cron: '0 0 * * *' },
+  { label: 'Weekdays (Mon–Fri) at 02:00', cron: '0 2 * * 1-5' },
+  { label: 'Weekly (Sunday) at 02:00', cron: '0 2 * * 0' },
+  { label: 'Weekly (Monday) at 02:00', cron: '0 2 * * 1' },
+  { label: 'Monthly (1st day) at 02:00', cron: '0 2 1 * *' },
+  { label: 'Yearly (Jan 1) at 02:00', cron: '0 2 1 1 *' },
+] as const
+
 export function Backups({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
   const [backups, setBackups] = useState<BackupRecord[]>([])
   const [jobs, setJobs] = useState<BackupJob[]>([])
@@ -495,6 +510,23 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
               </option>
             ))}
           </select>
+          <div>
+            <label className="mb-1 block text-xs text-slate-600">Schedule Template</label>
+            <select
+              value={CRON_TEMPLATES.some((t) => t.cron === cronExpr.trim()) ? cronExpr.trim() : '__custom__'}
+              onChange={(e) => {
+                if (e.target.value !== '__custom__') setCronExpr(e.target.value)
+              }}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              {CRON_TEMPLATES.map((t) => (
+                <option key={t.cron} value={t.cron}>
+                  {t.label} ({t.cron})
+                </option>
+              ))}
+              <option value="__custom__">Custom Cron Expression</option>
+            </select>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="mb-1 block text-xs text-slate-600">Cron Expression</label>
