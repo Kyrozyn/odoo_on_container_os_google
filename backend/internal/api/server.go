@@ -1416,8 +1416,22 @@ func (s *Server) spaHandler() http.Handler {
 			http.ServeFile(w, r, indexFile)
 			return
 		}
-		cleanPath := filepath.Clean(strings.TrimPrefix(r.URL.Path, "/"))
-		target := filepath.Join(staticDir, cleanPath)
+		absStaticDir, err := filepath.Abs(staticDir)
+		if err != nil {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		reqPath := strings.TrimPrefix(r.URL.Path, "/")
+		cleaned := filepath.Clean(filepath.FromSlash(strings.ReplaceAll(reqPath, "\\", "/")))
+		if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		target, err := filepath.Abs(filepath.Join(absStaticDir, cleaned))
+		if err != nil || !strings.HasPrefix(target, absStaticDir+string(os.PathSeparator)) {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
 		if info, err := os.Stat(target); err == nil && !info.IsDir() {
 			http.ServeFile(w, r, target)
 			return

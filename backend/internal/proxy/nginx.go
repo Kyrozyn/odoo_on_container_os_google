@@ -287,16 +287,37 @@ func PanelDomain(rootDomain, panelSubdomain string) string {
 // CertExists checks whether Let's Encrypt cert files exist on disk for a domain.
 func (m *Manager) CertExists(domain string) bool {
 	domain = NormalizeDomain(domain)
-	if domain == "" {
+	if !isSafeHostname(domain) {
 		return false
 	}
-	fullchain := filepath.Join(m.cfg.CertbotConfDir(), "live", domain, "fullchain.pem")
-	privkey := filepath.Join(m.cfg.CertbotConfDir(), "live", domain, "privkey.pem")
+	absLiveDir, err := filepath.Abs(filepath.Join(m.cfg.CertbotConfDir(), "live"))
+	if err != nil {
+		return false
+	}
+	absDomainDir, err := filepath.Abs(filepath.Join(absLiveDir, domain))
+	if err != nil || !strings.HasPrefix(absDomainDir, absLiveDir+string(os.PathSeparator)) {
+		return false
+	}
+	fullchain := filepath.Join(absDomainDir, "fullchain.pem")
+	privkey := filepath.Join(absDomainDir, "privkey.pem")
 	if _, err := os.Stat(fullchain); err != nil {
 		return false
 	}
 	if _, err := os.Stat(privkey); err != nil {
 		return false
+	}
+	return true
+}
+
+func isSafeHostname(domain string) bool {
+	if domain == "" || strings.Contains(domain, "..") {
+		return false
+	}
+	for i := 0; i < len(domain); i++ {
+		c := domain[i]
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
+			return false
+		}
 	}
 	return true
 }
