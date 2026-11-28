@@ -21,6 +21,7 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
   // Forms
   const [instId, setInstId] = useState('')
   const [dbName, setDbName] = useState('')
+  const [restoreInstId, setRestoreInstId] = useState('')
   const [restoreDbName, setRestoreDbName] = useState('')
   const [uploadFile, setUploadFile] = useState<File | null>(null)
   const [cronExpr, setCronExpr] = useState('0 2 * * *')
@@ -137,10 +138,10 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
 
   const handleRestoreExisting = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!restoreTarget) return
+    if (!restoreTarget || !restoreInstId) return
     setBusy(true)
     try {
-      await api.restoreBackup(restoreTarget.id, restoreTarget.instanceId, restoreDbName.trim())
+      await api.restoreBackup(restoreTarget.id, restoreInstId, restoreDbName.trim())
       notify(`Restore queued for "${restoreDbName.trim()}"! Check Backup Jobs below for progress.`)
       setRestoreTarget(null)
       load()
@@ -326,6 +327,7 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
                     <button
                       onClick={() => {
                         setRestoreTarget(b)
+                        setRestoreInstId(instances.some((i) => i.id === b.instanceId) ? b.instanceId : instances[0]?.id || '')
                         setRestoreDbName(b.dbName)
                       }}
                       className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 cursor-pointer"
@@ -443,10 +445,32 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
             Warning: Target database will be dropped and recreated from this archive.
           </p>
-          <input type="text" required value={restoreDbName} onChange={(e) => setRestoreDbName(e.target.value)} placeholder="Target database name" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">Target Instance</label>
+            <select
+              required
+              value={restoreInstId}
+              onChange={(e) => setRestoreInstId(e.target.value)}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            >
+              {instances.length === 0 ? (
+                <option value="">No instances available</option>
+              ) : (
+                instances.map((i) => (
+                  <option key={i.id} value={i.id}>
+                    {i.name} ({i.version})
+                  </option>
+                ))
+              )}
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">Target Database Name</label>
+            <input type="text" required value={restoreDbName} onChange={(e) => setRestoreDbName(e.target.value)} placeholder="Target database name" className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+          </div>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setRestoreTarget(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm cursor-pointer">Cancel</button>
-            <button type="submit" disabled={busy} className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white cursor-pointer">{busy ? 'Restoring...' : 'Confirm Restore'}</button>
+            <button type="submit" disabled={busy || !restoreInstId || !restoreDbName.trim()} className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60 cursor-pointer">{busy ? 'Restoring...' : 'Confirm Restore'}</button>
           </div>
         </form>
       </Modal>
