@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"github.com/runodoo/runodoo/internal/proxy"
 	"github.com/runodoo/runodoo/internal/store"
 	"github.com/runodoo/runodoo/internal/system"
+	qrcode "github.com/skip2/go-qrcode"
 )
 
 type Server struct {
@@ -280,9 +282,14 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	var qrDataUrl string
+	if png, err := qrcode.Encode(uri, qrcode.Medium, 200); err == nil {
+		qrDataUrl = "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"secret":     secret,
 		"otpauthUri": uri,
+		"qrDataUrl":  qrDataUrl,
 	})
 }
 

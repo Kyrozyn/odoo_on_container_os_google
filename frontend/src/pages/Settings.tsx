@@ -12,6 +12,7 @@ function computePanelDomain(root: string, sub: string): string {
 }
 
 export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
+  const [tab, setTab] = useState<'domain' | 'security'>('domain')
   const [settings, setSettings] = useState<PanelSettings | null>(null)
   const [rootDomain, setRootDomain] = useState('')
   const [panelSubdomain, setPanelSubdomain] = useState('panel')
@@ -24,7 +25,7 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
   const [rateLimitEnabled, setRateLimitEnabled] = useState(false)
   const [maxAttempts, setMaxAttempts] = useState('5')
   const [lockoutMinutes, setLockoutMinutes] = useState('10')
-  const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUri: string } | null>(null)
+  const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUri: string; qrDataUrl: string } | null>(null)
   const [totpCode, setTotpCode] = useState('')
   const [disable2faPass, setDisable2faPass] = useState('')
   const [busyAction, setBusyAction] = useState<
@@ -261,14 +262,44 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
   }
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Settings</h1>
-        <p className="text-sm text-slate-500">Configure RunOdoo Root Domain, HTTPS (Certbot), Nginx, and Admin Password</p>
+        <p className="text-sm text-slate-500">Configure RunOdoo Root Domain, HTTPS (Certbot), Panel Port, and Security</p>
       </div>
 
-      {/* Domain & SSL */}
-      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
+      {/* 2 Tabs: Domain & Network | Security & 2FA */}
+      <div className="flex gap-1 border-b border-slate-200">
+        <button
+          type="button"
+          onClick={() => setTab('domain')}
+          className={`inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition cursor-pointer ${
+            tab === 'domain'
+              ? 'border-[#714B67] text-[#714B67]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Globe className="h-4 w-4" />
+          Domain &amp; Network
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('security')}
+          className={`inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition cursor-pointer ${
+            tab === 'security'
+              ? 'border-[#714B67] text-[#714B67]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <ShieldCheck className="h-4 w-4" />
+          Security &amp; 2FA
+        </button>
+      </div>
+
+      {tab === 'domain' && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-start">
+          {/* Domain & SSL (2 cols) */}
+          <div className="lg:col-span-2 rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
             <Globe className="h-5 w-5 text-[#714B67]" />
@@ -384,48 +415,53 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
             </button>
           </div>
         </form>
-      </div>
-
-      {/* Panel Port */}
-      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
-            <Network className="h-5 w-5 text-[#714B67]" />
-            Panel Port
-          </h2>
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
-            Current: {settings?.panelPort || '3000'}
-          </span>
-        </div>
-        <p className="text-xs text-slate-500">
-          Change the host port used to access RunOdoo directly. Saving will recreate the RunOdoo container with the new port mapping (and roll back automatically if the port is unavailable). Make sure the new port is allowed in your firewall.
-        </p>
-        <form onSubmit={handleChangePort} className="flex flex-wrap items-end gap-3 max-w-md">
-          <div className="flex-1 min-w-[160px]">
-            <label className="mb-1 block text-xs font-medium text-slate-700">Host Port (1-65535)</label>
-            <input
-              type="number"
-              min={1}
-              max={65535}
-              required
-              value={panelPort}
-              onChange={(e) => setPanelPort(e.target.value)}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-            />
           </div>
-          <button
-            type="submit"
-            disabled={busy}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
-          >
-            {busyAction === 'port' && <Loader2 className="h-4 w-4 animate-spin" />}
-            {busyAction === 'port' ? 'Updating Port...' : 'Change Panel Port'}
-          </button>
-        </form>
-      </div>
 
-      {/* Change Admin Password */}
-      <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
+          {/* Panel Port (1 col) */}
+          <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                <Network className="h-5 w-5 text-[#714B67]" />
+                Panel Port
+              </h2>
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700">
+                Current: {settings?.panelPort || '3000'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Change the host port used to access RunOdoo directly. Saving will recreate the RunOdoo container with the new port mapping (and roll back automatically if the port is unavailable). Make sure the new port is allowed in your firewall.
+            </p>
+            <form onSubmit={handleChangePort} className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-700">Host Port (1-65535)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={65535}
+                  required
+                  value={panelPort}
+                  onChange={(e) => setPanelPort(e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
+              >
+                {busyAction === 'port' && <Loader2 className="h-4 w-4 animate-spin" />}
+                {busyAction === 'port' ? 'Updating Port...' : 'Change Panel Port'}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {tab === 'security' && (
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 items-start">
+          <div className="space-y-6">
+            {/* Change Admin Password */}
+            <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
         <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
           <KeyRound className="h-5 w-5 text-[#714B67]" />
           Change Panel Admin Password
@@ -533,8 +569,9 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
           </button>
         </form>
       </div>
+          </div>
 
-      {/* Two-Factor Authentication (2FA / TOTP) */}
+      {/* Two-Factor Authentication (2FA / TOTP) (Right column) */}
       <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-xs space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
@@ -573,26 +610,40 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
             </button>
           </form>
         ) : totpSetup ? (
-          <form onSubmit={handleEnable2FA} className="space-y-3 max-w-lg">
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2 text-xs">
-              <div className="font-semibold text-slate-700">1. Masukkan Setup Key ini ke Authenticator App Anda:</div>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 rounded bg-white border border-slate-200 px-2.5 py-1.5 font-mono text-xs text-slate-900 select-all">
-                  {totpSetup.secret}
-                </code>
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(totpSetup.secret)
-                    notify('2FA Secret copied!')
-                  }}
-                  className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-100 cursor-pointer"
-                >
-                  <Copy className="h-3.5 w-3.5" /> Copy
-                </button>
+          <form onSubmit={handleEnable2FA} className="space-y-4">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3 text-xs">
+              <div className="font-semibold text-slate-700">
+                1. Scan QR Code atau masukkan Setup Key ke Authenticator App Anda:
               </div>
-              <div className="text-[11px] text-slate-500 break-all">
-                URI: <code className="font-mono">{totpSetup.otpauthUri}</code>
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                {totpSetup.qrDataUrl && (
+                  <img
+                    src={totpSetup.qrDataUrl}
+                    alt="2FA QR Code"
+                    className="h-40 w-40 shrink-0 rounded-lg border border-slate-200 bg-white p-1.5"
+                  />
+                )}
+                <div className="flex-1 min-w-0 space-y-2 w-full">
+                  <div className="text-[11px] font-medium text-slate-600">Manual Setup Key:</div>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 truncate rounded bg-white border border-slate-200 px-2.5 py-1.5 font-mono text-xs text-slate-900 select-all">
+                      {totpSetup.secret}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(totpSetup.secret)
+                        notify('2FA Secret copied!')
+                      }}
+                      className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-100 cursor-pointer"
+                    >
+                      <Copy className="h-3.5 w-3.5" /> Copy
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-slate-500 break-all">
+                    URI: <code className="font-mono">{totpSetup.otpauthUri}</code>
+                  </div>
+                </div>
               </div>
             </div>
             <div>
@@ -641,6 +692,8 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
           </button>
         )}
       </div>
+        </div>
+      )}
     </div>
   )
 }

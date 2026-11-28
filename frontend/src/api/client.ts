@@ -165,7 +165,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     }),
-  setup2FA: () => request<{ secret: string; otpauthUri: string }>('/api/auth/2fa/setup', { method: 'POST' }),
+  setup2FA: () => request<{ secret: string; otpauthUri: string; qrDataUrl: string }>('/api/auth/2fa/setup', { method: 'POST' }),
   enable2FA: (secret: string, code: string) =>
     request<{ ok: boolean; totpEnabled: boolean }>('/api/auth/2fa/enable', {
       method: 'POST',
