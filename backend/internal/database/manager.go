@@ -64,7 +64,7 @@ func (m *Manager) EnsureSharedPostgres(ctx context.Context) error {
 	_, err = m.docker.CreateContainer(ctx, docker.CreateContainerSpec{
 		Name:  pg.ContainerName,
 		Image: pg.Image,
-		Cmd:   system.RecommendedPostgresTuning(sysInfo.TotalRAMMB),
+		Cmd:   []string{"postgres"},
 		Env: []string{
 			"POSTGRES_USER=" + pg.SuperUser,
 			"POSTGRES_PASSWORD=" + pg.SuperPassword,
@@ -86,7 +86,10 @@ func (m *Manager) EnsureSharedPostgres(ctx context.Context) error {
 	if err := m.docker.StartContainer(ctx, pg.ContainerName); err != nil {
 		return err
 	}
-	return m.waitPostgresReady(ctx, pg.ContainerName, pg.SuperUser)
+	if err := m.waitPostgresReady(ctx, pg.ContainerName, pg.SuperUser); err != nil {
+		return err
+	}
+	return m.applyInitialTuning(ctx, pg.ContainerName, pg.SuperUser, pg.SuperPassword, sysInfo.TotalRAMMB)
 }
 
 // EnsureSharedRole creates an isolated non-superuser role with CREATEDB privilege on the shared PostgreSQL.
@@ -142,7 +145,7 @@ func (m *Manager) CreateDedicatedPostgres(ctx context.Context, inst models.OdooI
 	_, err := m.docker.CreateContainer(ctx, docker.CreateContainerSpec{
 		Name:  inst.DBContainerName,
 		Image: image,
-		Cmd:   system.RecommendedPostgresTuning(sysInfo.TotalRAMMB),
+		Cmd:   []string{"postgres"},
 		Env: []string{
 			"POSTGRES_USER=" + inst.DBUser,
 			"POSTGRES_PASSWORD=" + inst.DBPassword,
@@ -165,7 +168,10 @@ func (m *Manager) CreateDedicatedPostgres(ctx context.Context, inst models.OdooI
 	if err := m.docker.StartContainer(ctx, inst.DBContainerName); err != nil {
 		return err
 	}
-	return m.waitPostgresReady(ctx, inst.DBContainerName, inst.DBUser)
+	if err := m.waitPostgresReady(ctx, inst.DBContainerName, inst.DBUser); err != nil {
+		return err
+	}
+	return m.applyInitialTuning(ctx, inst.DBContainerName, inst.DBUser, inst.DBPassword, sysInfo.TotalRAMMB)
 }
 
 // ListInstanceDatabases lists all user databases owned by or belonging to an Odoo instance.
@@ -674,10 +680,54 @@ func (m *Manager) UpdatePostgresConfig(ctx context.Context, inst models.OdooInst
 	return m.GetPostgresConfig(ctx, inst)
 }
 
-// RestartPostgres restarts the PostgreSQL container for an instance and waits until it is ready.
-func (m *Manager) RestartPostgres(ctx context.Context, inst models.OdooInstance) error {
-	if err := m.docker.RestartContainer(ctx, inst.DBContainerName, 15); err != nil {
+// applyInitialTuning writes recommended RAM-based tuning via ALTER SYSTEM so it can later be overridden in UI.
+func (m *Manager) applyInitialTuning(ctx context.Context, containerName, user, pass string, totalRAMMB int64) error {
+	tuning := system.RecommendedPostgresTuningMap(totalRAMMB)
+	for k, v := range tuning {
+		stmt := fmt.Sprintf("ALTER SYSTEM SET %s = '%s';", k, escapeSQL(v))
+		_, _, _ = m.docker.Exec(ctx, containerName, []string{
+			"psql", "-U", user, "-d", "postgres", "-c", stmt,
+		}, []string{"PGPASSWORD=" + pass})
+	}
+	if err := m.docker.RestartContainer(ctx, containerName, 15); err != nil {
 		return err
+	}
+	return m.waitPostgresReady(ctx, containerName, user)
+}
+
+// RestartPostgres restarts the PostgreSQL container for an instance and waits until it is ready.
+// If the container was created with legacy `-c` CLI flags (which override postgresql.auto.conf),
+// it recreates the container without `-c` flags while preserving its data volume.
+func (m *Manager) RestartPostgres(ctx context.Context, inst models.OdooInstance) error {
+	insp, err := m.docker.InspectContainer(ctx, inst.DBContainerName)
+	if err == nil && len(insp.Config.Cmd) > 1 {
+		_ = m.docker.StopContainer(ctx, inst.DBContainerName, 15)
+		if err := m.docker.RemoveContainer(ctx, inst.DBContainerName, true); err != nil {
+			return err
+		}
+		rp := insp.HostConfig.RestartPolicy.Name
+		if rp == "" {
+			rp = "unless-stopped"
+		}
+		if _, err := m.docker.CreateContainer(ctx, docker.CreateContainerSpec{
+			Name:          inst.DBContainerName,
+			Image:         insp.Config.Image,
+			Cmd:           []string{"postgres"},
+			Env:           insp.Config.Env,
+			Labels:        insp.Config.Labels,
+			Binds:         insp.HostConfig.Binds,
+			Network:       m.cfg.DockerNetwork,
+			RestartPolicy: rp,
+		}); err != nil {
+			return err
+		}
+		if err := m.docker.StartContainer(ctx, inst.DBContainerName); err != nil {
+			return err
+		}
+	} else {
+		if err := m.docker.RestartContainer(ctx, inst.DBContainerName, 15); err != nil {
+			return err
+		}
 	}
 	pgUser, _ := m.adminCredsForInstance(inst)
 	return m.waitPostgresReady(ctx, inst.DBContainerName, pgUser)

@@ -63,8 +63,8 @@ func RecommendedOdooResources(totalRAMMB int64, cpuCores int) models.ResourceCon
 	}
 }
 
-// RecommendedPostgresTuning computes PostgreSQL flags for host RAM.
-func RecommendedPostgresTuning(totalRAMMB int64) []string {
+// RecommendedPostgresTuningMap computes recommended PostgreSQL parameter values for host RAM.
+func RecommendedPostgresTuningMap(totalRAMMB int64) map[string]string {
 	if totalRAMMB <= 0 {
 		totalRAMMB = 1024
 	}
@@ -80,13 +80,25 @@ func RecommendedPostgresTuning(totalRAMMB int64) []string {
 	if maintMem < 32 {
 		maintMem = 32
 	}
+	return map[string]string{
+		"shared_buffers":       strconv.FormatInt(sharedBuf, 10) + "MB",
+		"effective_cache_size": strconv.FormatInt(effCache, 10) + "MB",
+		"maintenance_work_mem": strconv.FormatInt(maintMem, 10) + "MB",
+		"work_mem":             "4MB",
+		"max_connections":      "100",
+	}
+}
+
+// RecommendedPostgresTuning computes PostgreSQL flags for host RAM.
+func RecommendedPostgresTuning(totalRAMMB int64) []string {
+	m := RecommendedPostgresTuningMap(totalRAMMB)
 	return []string{
 		"postgres",
-		"-c", "shared_buffers=" + strconv.FormatInt(sharedBuf, 10) + "MB",
-		"-c", "effective_cache_size=" + strconv.FormatInt(effCache, 10) + "MB",
-		"-c", "maintenance_work_mem=" + strconv.FormatInt(maintMem, 10) + "MB",
-		"-c", "work_mem=4MB",
-		"-c", "max_connections=100",
+		"-c", "shared_buffers=" + m["shared_buffers"],
+		"-c", "effective_cache_size=" + m["effective_cache_size"],
+		"-c", "maintenance_work_mem=" + m["maintenance_work_mem"],
+		"-c", "work_mem=" + m["work_mem"],
+		"-c", "max_connections=" + m["max_connections"],
 	}
 }
 
