@@ -10,7 +10,7 @@ import {
   Server,
   Settings as SettingsIcon,
 } from 'lucide-react'
-import { api, clearToken, getToken, setToken } from './api/client'
+import { api, clearToken, getToken } from './api/client'
 import { Login } from './pages/Login'
 import { Dashboard } from './pages/Dashboard'
 import { Instances } from './pages/Instances'
@@ -122,13 +122,13 @@ export default function App() {
               }
               setSavingPass(true)
               try {
-                const res = await api.changePassword(curPass, newPass)
-                if (res.token) setToken(res.token)
+                await api.changePassword(curPass, newPass)
+                clearToken()
                 setForcePasswordChange(false)
+                setAuthed(false)
                 setCurPass('')
                 setNewPass('')
                 setConfirmPass('')
-                notify('Admin password updated!')
               } catch (err) {
                 setPassErr(err instanceof Error ? err.message : 'Failed updating password')
               } finally {

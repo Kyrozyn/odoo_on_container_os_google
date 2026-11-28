@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { Copy, Globe, KeyRound, Loader2, Lock, Network, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react'
-import { api, setToken } from '../api/client'
+import { api, clearToken, setToken } from '../api/client'
 import type { PanelSettings } from '../types'
 
 function computePanelDomain(root: string, sub: string): string {
@@ -172,11 +172,10 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
     e.preventDefault()
     setBusyAction('password')
     try {
-      const res = await api.changePassword(currentPassword, newPassword)
-      if (res.token) setToken(res.token)
-      setCurrentPassword('')
-      setNewPassword('')
-      notify('Admin password updated! All other sessions revoked.')
+      await api.changePassword(currentPassword, newPassword)
+      clearToken()
+      window.dispatchEvent(new Event('runodoo:unauthorized'))
+      notify('Admin password updated! Please sign in again.')
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Password change failed', 'error')
     } finally {

@@ -161,7 +161,7 @@ export const api = {
     }),
   me: () => request<{ user: string; passwordChanged: boolean; totpEnabled: boolean; rootDomain: string }>('/api/auth/me'),
   changePassword: (currentPassword: string, newPassword: string) =>
-    request<{ ok: boolean; token?: string }>('/api/auth/change-password', {
+    request<{ ok: boolean }>('/api/auth/change-password', {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     }),

@@ -355,8 +355,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	token, _ := s.auth.GenerateToken()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
