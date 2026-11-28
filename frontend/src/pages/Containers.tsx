@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Loader2, Play, RefreshCw, RotateCw, Square, Terminal } from 'lucide-react'
+import { AlertTriangle, Loader2, Play, RefreshCw, RotateCw, Square, Terminal } from 'lucide-react'
 import { api } from '../api/client'
 import type { ContainerSummary } from '../types'
 import { Modal, StatusBadge } from '../components/UI'
@@ -10,6 +10,12 @@ export function Containers({ notify }: { notify: (msg: string, type?: 'success' 
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [logModal, setLogModal] = useState<{ name: string; logs: string } | null>(null)
+  const [confirmAction, setConfirmAction] = useState<{
+    id: string
+    name: string
+    role: string
+    action: 'stop' | 'restart'
+  } | null>(null)
 
   const load = async () => {
     setLoading(true)
@@ -114,11 +120,33 @@ export function Containers({ notify }: { notify: (msg: string, type?: 'success' 
                               <Play className="h-4 w-4" />
                             </button>
                           ) : (
-                            <button title="Stop" onClick={() => act(c.Id, 'stop')} className="rounded p-1.5 text-amber-600 hover:bg-amber-50 cursor-pointer">
+                            <button
+                              title="Stop"
+                              onClick={() =>
+                                setConfirmAction({
+                                  id: c.Id,
+                                  name,
+                                  role: c.Labels?.['runodoo.role'] || 'external',
+                                  action: 'stop',
+                                })
+                              }
+                              className="rounded p-1.5 text-amber-600 hover:bg-amber-50 cursor-pointer"
+                            >
                               <Square className="h-4 w-4" />
                             </button>
                           )}
-                          <button title="Restart" onClick={() => act(c.Id, 'restart')} className="rounded p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer">
+                          <button
+                            title="Restart"
+                            onClick={() =>
+                              setConfirmAction({
+                                id: c.Id,
+                                name,
+                                role: c.Labels?.['runodoo.role'] || 'external',
+                                action: 'restart',
+                              })
+                            }
+                            className="rounded p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer"
+                          >
                             <RotateCw className="h-4 w-4" />
                           </button>
                         </>
@@ -143,6 +171,65 @@ export function Containers({ notify }: { notify: (msg: string, type?: 'success' 
         <pre className="max-h-[65vh] overflow-auto rounded-lg bg-slate-950 p-4 font-mono text-xs text-emerald-300 whitespace-pre-wrap">
           {logModal?.logs || 'No logs.'}
         </pre>
+      </Modal>
+
+      <Modal
+        open={!!confirmAction}
+        onClose={() => setConfirmAction(null)}
+        title={confirmAction?.action === 'stop' ? `Stop Container "${confirmAction.name}"?` : `Restart Container "${confirmAction?.name}"?`}
+      >
+        {confirmAction && (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600" />
+              <div className="space-y-1">
+                <p>
+                  Anda akan melakukan <strong>{confirmAction.action.toUpperCase()}</strong> pada container{' '}
+                  <code className="rounded bg-amber-100 px-1 py-0.5 font-mono">{confirmAction.name}</code> (role:{' '}
+                  <strong>{confirmAction.role}</strong>).
+                </p>
+                {confirmAction.role === 'postgres-shared' && (
+                  <p>
+                    <strong>Perhatian:</strong> Container ini dipakai bersama oleh semua Odoo instance mode{' '}
+                    <em>shared</em>. Menghentikan atau me-restart container ini akan memutus koneksi database seluruh
+                    shared instance.
+                  </p>
+                )}
+                {(confirmAction.role === 'proxy' || confirmAction.role === 'nginx') && (
+                  <p>
+                    <strong>Perhatian:</strong> Container reverse proxy ini melayani akses domain/SSL ke panel dan
+                    instance Odoo.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setConfirmAction(null)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const target = confirmAction
+                  setConfirmAction(null)
+                  act(target.id, target.action)
+                }}
+                className={`rounded-lg px-4 py-2 text-sm font-semibold text-white cursor-pointer ${
+                  confirmAction.action === 'stop'
+                    ? 'bg-amber-600 hover:bg-amber-700'
+                    : 'bg-[#714B67] hover:bg-[#5c3c54]'
+                }`}
+              >
+                {confirmAction.action === 'stop' ? 'Confirm Stop' : 'Confirm Restart'}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
