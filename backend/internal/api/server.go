@@ -116,6 +116,11 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("POST /api/instances/{id}/databases", s.handleCreateDatabase)
 	protected.HandleFunc("POST /api/instances/{id}/databases/duplicate", s.handleDuplicateDatabase)
 	protected.HandleFunc("DELETE /api/instances/{id}/databases/{dbName}", s.handleDropDatabase)
+	protected.HandleFunc("GET /api/instances/{id}/postgres/metrics", s.handlePostgresMetrics)
+	protected.HandleFunc("GET /api/instances/{id}/postgres/config", s.handleGetPostgresConfig)
+	protected.HandleFunc("PUT /api/instances/{id}/postgres/config", s.handleUpdatePostgresConfig)
+	protected.HandleFunc("POST /api/instances/{id}/postgres/restart", s.handleRestartPostgres)
+	protected.HandleFunc("POST /api/instances/{id}/postgres/maintenance", s.handlePostgresMaintenance)
 
 	// Addons
 	protected.HandleFunc("GET /api/addons", s.handleListAddons)
@@ -1019,6 +1024,90 @@ func (s *Server) handleDropDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePostgresMetrics(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	metrics, err := s.db.GetPostgresMetrics(r.Context(), inst)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, metrics)
+}
+
+func (s *Server) handleGetPostgresConfig(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	settings, err := s.db.GetPostgresConfig(r.Context(), inst)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleUpdatePostgresConfig(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	var body struct {
+		Updates map[string]string `json:"updates"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	settings, err := s.db.UpdatePostgresConfig(r.Context(), inst, body.Updates)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) handleRestartPostgres(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	if err := s.db.RestartPostgres(r.Context(), inst); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handlePostgresMaintenance(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	var body struct {
+		Action string `json:"action"`
+		DBName string `json:"dbName"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	msg, err := s.db.RunMaintenance(r.Context(), inst, body.Action, body.DBName)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": msg})
 }
 
 // --- Addons ---

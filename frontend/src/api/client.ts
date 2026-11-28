@@ -11,6 +11,8 @@ import type {
   OdooInstance,
   OdooVersionInfo,
   PanelSettings,
+  PostgresMetrics,
+  PostgresSetting,
   SystemInfo,
 } from '../types'
 
@@ -292,6 +294,28 @@ export const api = {
   dropDatabase: (instanceId: string, dbName: string) =>
     request<{ ok: boolean }>(`/api/instances/${instanceId}/databases/${encodeURIComponent(dbName)}`, {
       method: 'DELETE',
+    }),
+  getPostgresMetrics: (instanceId: string) =>
+    request<PostgresMetrics>(`/api/instances/${instanceId}/postgres/metrics`),
+  getPostgresConfig: (instanceId: string) =>
+    request<PostgresSetting[]>(`/api/instances/${instanceId}/postgres/config`),
+  updatePostgresConfig: (instanceId: string, updates: Record<string, string>) =>
+    request<PostgresSetting[]>(`/api/instances/${instanceId}/postgres/config`, {
+      method: 'PUT',
+      body: JSON.stringify({ updates }),
+    }),
+  restartPostgres: (instanceId: string) =>
+    request<{ ok: boolean }>(`/api/instances/${instanceId}/postgres/restart`, {
+      method: 'POST',
+    }),
+  runPostgresMaintenance: (
+    instanceId: string,
+    action: 'vacuum_analyze' | 'terminate_idle',
+    dbName?: string
+  ) =>
+    request<{ ok: boolean; message: string }>(`/api/instances/${instanceId}/postgres/maintenance`, {
+      method: 'POST',
+      body: JSON.stringify({ action, dbName: dbName || '' }),
     }),
 
   // Addons

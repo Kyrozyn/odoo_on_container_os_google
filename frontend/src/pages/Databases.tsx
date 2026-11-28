@@ -1,11 +1,28 @@
 import React, { useEffect, useState } from 'react'
-import { Copy, Database, Download, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react'
+import { ArrowRight, Copy, Database, Download, Loader2, Plus, RefreshCw, Server, Trash2 } from 'lucide-react'
 import { api } from '../api/client'
 import type { DatabaseInfo, OdooInstance } from '../types'
-import { Modal } from '../components/UI'
+import { Modal, StatusBadge } from '../components/UI'
 import { CreateDatabaseModal } from '../components/CreateDatabaseModal'
+import { DatabaseInstanceDetail } from './DatabaseInstanceDetail'
+
+type DbTab = 'all' | 'instances'
+
+function formatTotalBytes(bytes: number): string {
+  if (!bytes) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = bytes
+  let i = 0
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
 
 export function Databases({ notify }: { notify: (msg: string, type?: 'success' | 'error') => void }) {
+  const [tab, setTab] = useState<DbTab>('all')
+  const [selectedInstId, setSelectedInstId] = useState<string | null>(null)
   const [dbs, setDbs] = useState<DatabaseInfo[]>([])
   const [instances, setInstances] = useState<OdooInstance[]>([])
   const [loading, setLoading] = useState(true)
@@ -30,6 +47,18 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
   useEffect(() => {
     load()
   }, [])
+
+  const selectedInstance = selectedInstId ? instances.find((i) => i.id === selectedInstId) : null
+  if (selectedInstance) {
+    return (
+      <DatabaseInstanceDetail
+        instance={selectedInstance}
+        onBack={() => setSelectedInstId(null)}
+        onChanged={load}
+        notify={notify}
+      />
+    )
+  }
 
   const handleDuplicate = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -72,95 +101,203 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
         </div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-white shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200 text-xs uppercase text-slate-500">
-              <tr>
-                <th className="px-5 py-3">Database Name</th>
-                <th className="px-5 py-3">Odoo Instance</th>
-                <th className="px-5 py-3">PostgreSQL Container</th>
-                <th className="px-5 py-3">Size</th>
-                <th className="px-5 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {dbs.map((db) => (
-                <tr key={`${db.containerName}-${db.name}`} className="hover:bg-slate-50">
-                  <td className="px-5 py-3.5 font-semibold text-slate-900 flex items-center gap-2">
-                    <Database className="h-4 w-4 text-[#714B67]" />
-                    {db.name}
-                  </td>
-                  <td className="px-5 py-3.5 text-slate-700">{db.instanceName || '—'}</td>
-                  <td className="px-5 py-3.5 font-mono text-xs text-slate-500">{db.containerName}</td>
-                  <td className="px-5 py-3.5 text-xs text-slate-600">{db.sizePretty}</td>
-                  <td className="px-5 py-3.5 text-right space-x-1.5">
-                    {db.instanceId && (
-                      <>
-                        <button
-                          disabled={!!busyKey}
-                          onClick={async () => {
-                            setBusyKey(`backup:${db.name}`)
-                            try {
-                              await api.createBackup(db.instanceId!, db.name)
-                              notify(`Backup created for ${db.name}! Check Backups page.`)
-                            } catch (err) {
-                              notify(err instanceof Error ? err.message : 'Backup failed', 'error')
-                            } finally {
-                              setBusyKey(null)
-                            }
-                          }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
-                        >
-                          {busyKey === `backup:${db.name}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Download className="h-3 w-3" />}
-                          {busyKey === `backup:${db.name}` ? 'Backing up...' : 'Backup'}
-                        </button>
-                        <button
-                          disabled={!!busyKey}
-                          onClick={() => {
-                            setDupTarget({ instId: db.instanceId!, src: db.name })
-                            setDupNewName(`${db.name}_copy`)
-                          }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
-                        >
-                          <Copy className="h-3 w-3" /> Duplicate
-                        </button>
-                        <button
-                          disabled={!!busyKey}
-                          onClick={async () => {
-                            if (!confirm(`Drop database "${db.name}" permanently?`)) return
-                            setBusyKey(`drop:${db.name}`)
-                            try {
-                              await api.dropDatabase(db.instanceId!, db.name)
-                              notify(`Dropped ${db.name}`)
-                              load()
-                            } catch (err) {
-                              notify(err instanceof Error ? err.message : 'Drop failed', 'error')
-                            } finally {
-                              setBusyKey(null)
-                            }
-                          }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 cursor-pointer"
-                        >
-                          {busyKey === `drop:${db.name}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-                          {busyKey === `drop:${db.name}` ? 'Dropping...' : 'Drop'}
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {dbs.length === 0 && !loading && (
-                <tr>
-                  <td colSpan={5} className="px-5 py-10 text-center text-xs text-slate-500">
-                    No databases found. Deploy an Odoo instance first or create a database.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+      {/* 2 Tabs: All Databases & By Instance */}
+      <div className="flex gap-1 border-b border-slate-200">
+        <button
+          onClick={() => setTab('all')}
+          className={`inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition cursor-pointer ${
+            tab === 'all'
+              ? 'border-[#714B67] text-[#714B67]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Database className="h-4 w-4" />
+          All Databases ({dbs.length})
+        </button>
+        <button
+          onClick={() => setTab('instances')}
+          className={`inline-flex items-center gap-1.5 border-b-2 px-4 py-2.5 text-sm font-medium transition cursor-pointer ${
+            tab === 'instances'
+              ? 'border-[#714B67] text-[#714B67]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Server className="h-4 w-4" />
+          By Instance ({instances.length})
+        </button>
       </div>
+
+      {tab === 'all' && (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {dbs.map((db) => (
+            <div
+              key={`${db.containerName}-${db.name}`}
+              className="flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 shadow-xs transition hover:border-[#714B67]/40 hover:shadow-sm"
+            >
+              <div>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-purple-50 text-[#714B67]">
+                      <Database className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="truncate text-base font-bold text-slate-900">{db.name}</h3>
+                      <p className="truncate text-xs text-slate-500 font-mono">{db.containerName}</p>
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-700">
+                    {db.sizePretty}
+                  </span>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-1.5 text-xs">
+                  {db.instanceName && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (db.instanceId) {
+                          setSelectedInstId(db.instanceId)
+                        }
+                      }}
+                      className="rounded-md bg-purple-50 px-2 py-0.5 font-medium text-[#714B67] hover:bg-purple-100 cursor-pointer"
+                    >
+                      Instance: {db.instanceName}
+                    </button>
+                  )}
+                  <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700">
+                    Owner: {db.owner}
+                  </span>
+                </div>
+              </div>
+
+              {db.instanceId && (
+                <div className="mt-4 flex flex-wrap items-center gap-1.5 pt-3 border-t border-slate-100">
+                  <button
+                    disabled={!!busyKey}
+                    onClick={async () => {
+                      setBusyKey(`backup:${db.name}`)
+                      try {
+                        await api.createBackup(db.instanceId!, db.name)
+                        notify(`Backup queued for ${db.name}! Check Backups page.`)
+                      } catch (err) {
+                        notify(err instanceof Error ? err.message : 'Backup failed', 'error')
+                      } finally {
+                        setBusyKey(null)
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
+                  >
+                    {busyKey === `backup:${db.name}` ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Download className="h-3 w-3" />
+                    )}
+                    {busyKey === `backup:${db.name}` ? 'Backing up...' : 'Backup'}
+                  </button>
+                  <button
+                    disabled={!!busyKey}
+                    onClick={() => {
+                      setDupTarget({ instId: db.instanceId!, src: db.name })
+                      setDupNewName(`${db.name}_copy`)
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50 cursor-pointer"
+                  >
+                    <Copy className="h-3 w-3" /> Duplicate
+                  </button>
+                  <button
+                    disabled={!!busyKey}
+                    onClick={async () => {
+                      if (!confirm(`Drop database "${db.name}" permanently?`)) return
+                      setBusyKey(`drop:${db.name}`)
+                      try {
+                        await api.dropDatabase(db.instanceId!, db.name)
+                        notify(`Dropped ${db.name}`)
+                        load()
+                      } catch (err) {
+                        notify(err instanceof Error ? err.message : 'Drop failed', 'error')
+                      } finally {
+                        setBusyKey(null)
+                      }
+                    }}
+                    className="ml-auto inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50 cursor-pointer"
+                  >
+                    {busyKey === `drop:${db.name}` ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3 w-3" />
+                    )}
+                    {busyKey === `drop:${db.name}` ? 'Dropping...' : 'Drop'}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          {dbs.length === 0 && !loading && (
+            <div className="col-span-full rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-xs text-slate-500">
+              No databases found. Deploy an Odoo instance first or create a database.
+            </div>
+          )}
+        </div>
+      )}
+
+      {tab === 'instances' && (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {instances.map((inst) => {
+            const instDbs = dbs.filter((d) => d.instanceId === inst.id)
+            const totalBytes = instDbs.reduce((acc, d) => acc + (d.sizeBytes || 0), 0)
+            return (
+              <div
+                key={inst.id}
+                onClick={() => setSelectedInstId(inst.id)}
+                className="group flex flex-col justify-between rounded-xl border border-slate-200 bg-white p-5 shadow-xs transition hover:border-[#714B67]/50 hover:shadow-md cursor-pointer"
+              >
+                <div>
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900 group-hover:text-[#714B67]">
+                        {inst.name}
+                      </h3>
+                      <p className="text-xs text-slate-500 font-mono">{inst.dbContainerName}</p>
+                    </div>
+                    <StatusBadge status={inst.dbStatus || inst.status} />
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-1.5 text-xs">
+                    <span className="rounded-md bg-purple-50 px-2 py-0.5 font-medium text-[#714B67]">
+                      Odoo {inst.version}
+                    </span>
+                    <span
+                      className={`rounded-md px-2 py-0.5 font-medium ${
+                        inst.dbMode === 'dedicated'
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-sky-50 text-sky-700'
+                      }`}
+                    >
+                      DB: {inst.dbMode}
+                    </span>
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700">
+                      {instDbs.length} DB(s)
+                    </span>
+                    <span className="rounded-md bg-slate-100 px-2 py-0.5 text-slate-700">
+                      {formatTotalBytes(totalBytes)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between pt-3 border-t border-slate-100 text-xs font-medium text-[#714B67]">
+                  <span>Metrics, Postgres Config &amp; Maintenance</span>
+                  <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                </div>
+              </div>
+            )
+          })}
+          {instances.length === 0 && !loading && (
+            <div className="col-span-full rounded-xl border border-dashed border-slate-300 bg-white p-10 text-center text-xs text-slate-500">
+              No Odoo instances deployed yet.
+            </div>
+          )}
+        </div>
+      )}
 
       <CreateDatabaseModal
         open={showCreate}
@@ -194,7 +331,7 @@ export function Databases({ notify }: { notify: (msg: string, type?: 'success' |
             <button type="button" onClick={() => setDupTarget(null)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm cursor-pointer">
               Cancel
             </button>
-            <button type="submit" className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white cursor-pointer">
+            <button type="submit" disabled={!!busyKey} className="rounded-lg bg-[#714B67] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50 cursor-pointer">
               Duplicate DB + Filestore
             </button>
           </div>

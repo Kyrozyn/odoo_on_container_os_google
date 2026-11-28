@@ -89,6 +89,35 @@ export interface DatabaseInfo {
   containerName: string
 }
 
+export interface PostgresMetrics {
+  containerName: string
+  dbMode: DBMode
+  postgresVersion: string
+  cpuPercent: number
+  memoryUsageMb: number
+  memoryLimitMb: number
+  memoryPercent: number
+  activeConnections: number
+  idleConnections: number
+  totalConnections: number
+  maxConnections: number
+  cacheHitRatio: number
+  totalSizeBytes: number
+  totalSizePretty: string
+  databaseCount: number
+  uptime: string
+}
+
+export interface PostgresSetting {
+  name: string
+  setting: string
+  unit: string
+  shortDesc: string
+  context: string
+  pendingRestart: boolean
+  source: string
+}
+
 export interface BackupRecord {
   id: string
   instanceId: string

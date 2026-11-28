@@ -484,3 +484,264 @@ func copyDir(src, dst string) error {
 		return os.WriteFile(target, data, info.Mode())
 	})
 }
+
+// PostgresMetrics summarizes container and PostgreSQL runtime telemetry for an instance's DB container.
+type PostgresMetrics struct {
+	ContainerName     string        `json:"containerName"`
+	DBMode            models.DBMode `json:"dbMode"`
+	PostgresVersion   string        `json:"postgresVersion"`
+	CPUPercent        float64       `json:"cpuPercent"`
+	MemoryUsageMB     float64       `json:"memoryUsageMb"`
+	MemoryLimitMB     float64       `json:"memoryLimitMb"`
+	MemoryPercent     float64       `json:"memoryPercent"`
+	ActiveConnections int           `json:"activeConnections"`
+	IdleConnections   int           `json:"idleConnections"`
+	TotalConnections  int           `json:"totalConnections"`
+	MaxConnections    int           `json:"maxConnections"`
+	CacheHitRatio     float64       `json:"cacheHitRatio"`
+	TotalSizeBytes    int64         `json:"totalSizeBytes"`
+	TotalSizePretty   string        `json:"totalSizePretty"`
+	DatabaseCount     int           `json:"databaseCount"`
+	Uptime            string        `json:"uptime"`
+}
+
+// PostgresSetting represents a single tunable PostgreSQL GUC setting.
+type PostgresSetting struct {
+	Name           string `json:"name"`
+	Setting        string `json:"setting"`
+	Unit           string `json:"unit"`
+	ShortDesc      string `json:"shortDesc"`
+	Context        string `json:"context"`
+	PendingRestart bool   `json:"pendingRestart"`
+	Source         string `json:"source"`
+}
+
+var tunablePostgresParams = []string{
+	"max_connections",
+	"shared_buffers",
+	"effective_cache_size",
+	"work_mem",
+	"maintenance_work_mem",
+	"wal_buffers",
+	"checkpoint_completion_target",
+	"random_page_cost",
+	"effective_io_concurrency",
+	"max_worker_processes",
+	"max_parallel_workers_per_gather",
+	"max_parallel_workers",
+	"log_min_duration_statement",
+	"idle_in_transaction_session_timeout",
+	"statement_timeout",
+	"lock_timeout",
+}
+
+var validPGSettingValue = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func (m *Manager) execPSQL(ctx context.Context, inst models.OdooInstance, dbName, query string) (string, error) {
+	pgUser, pgPass := m.adminCredsForInstance(inst)
+	if dbName == "" {
+		dbName = "postgres"
+	}
+	out, code, err := m.docker.Exec(ctx, inst.DBContainerName, []string{
+		"psql", "-U", pgUser, "-d", dbName, "-At", "-F", "|", "-c", query,
+	}, []string{"PGPASSWORD=" + pgPass})
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", fmt.Errorf("psql error: %s", strings.TrimSpace(out))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// GetPostgresMetrics collects Docker container stats and PostgreSQL runtime metrics for an instance.
+func (m *Manager) GetPostgresMetrics(ctx context.Context, inst models.OdooInstance) (*PostgresMetrics, error) {
+	res := &PostgresMetrics{
+		ContainerName: inst.DBContainerName,
+		DBMode:        inst.DBMode,
+	}
+
+	if stats, err := m.docker.ContainerStats(ctx, inst.DBContainerName); err == nil {
+		res.CPUPercent = stats.CPUPercent
+		res.MemoryUsageMB = stats.MemoryUsageMB
+		res.MemoryLimitMB = stats.MemoryLimitMB
+		res.MemoryPercent = stats.MemoryPercent
+	}
+
+	dbs, err := m.ListInstanceDatabases(ctx, inst)
+	if err == nil {
+		res.DatabaseCount = len(dbs)
+		for _, d := range dbs {
+			res.TotalSizeBytes += d.SizeBytes
+		}
+		res.TotalSizePretty = formatSizeBytes(res.TotalSizeBytes)
+	}
+
+	query := `SELECT
+		split_part(version(), ' ', 2),
+		(SELECT count(*) FROM pg_stat_activity WHERE state = 'active'),
+		(SELECT count(*) FROM pg_stat_activity WHERE state = 'idle'),
+		(SELECT count(*) FROM pg_stat_activity),
+		current_setting('max_connections')::int,
+		COALESCE((SELECT round(sum(blks_hit)*100.0/NULLIF(sum(blks_hit+blks_read),0), 2) FROM pg_stat_database), 100),
+		COALESCE(date_trunc('second', now() - pg_postmaster_start_time())::text, '');`
+	out, err := m.execPSQL(ctx, inst, "postgres", query)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(out, "|")
+	if len(parts) >= 7 {
+		res.PostgresVersion = parts[0]
+		res.ActiveConnections, _ = strconv.Atoi(parts[1])
+		res.IdleConnections, _ = strconv.Atoi(parts[2])
+		res.TotalConnections, _ = strconv.Atoi(parts[3])
+		res.MaxConnections, _ = strconv.Atoi(parts[4])
+		res.CacheHitRatio, _ = strconv.ParseFloat(parts[5], 64)
+		res.Uptime = parts[6]
+	}
+	return res, nil
+}
+
+// GetPostgresConfig returns the current tunable PostgreSQL settings for an instance's DB container.
+func (m *Manager) GetPostgresConfig(ctx context.Context, inst models.OdooInstance) ([]PostgresSetting, error) {
+	quoted := make([]string, len(tunablePostgresParams))
+	for i, p := range tunablePostgresParams {
+		quoted[i] = "'" + p + "'"
+	}
+	query := fmt.Sprintf(`SELECT name, setting, COALESCE(unit, ''), COALESCE(short_desc, ''), context, pending_restart::text, source
+FROM pg_settings
+WHERE name IN (%s)
+ORDER BY array_position(ARRAY[%s]::text[], name);`, strings.Join(quoted, ","), strings.Join(quoted, ","))
+
+	out, err := m.execPSQL(ctx, inst, "postgres", query)
+	if err != nil {
+		return nil, err
+	}
+	var settings []PostgresSetting
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 7 {
+			continue
+		}
+		settings = append(settings, PostgresSetting{
+			Name:           parts[0],
+			Setting:        parts[1],
+			Unit:           parts[2],
+			ShortDesc:      parts[3],
+			Context:        parts[4],
+			PendingRestart: parts[5] == "true" || parts[5] == "t",
+			Source:         parts[6],
+		})
+	}
+	return settings, nil
+}
+
+// UpdatePostgresConfig applies ALTER SYSTEM SET / RESET for allowlisted parameters and reloads PostgreSQL.
+func (m *Manager) UpdatePostgresConfig(ctx context.Context, inst models.OdooInstance, updates map[string]string) ([]PostgresSetting, error) {
+	allowed := make(map[string]bool, len(tunablePostgresParams))
+	for _, p := range tunablePostgresParams {
+		allowed[p] = true
+	}
+
+	var stmts []string
+	for k, v := range updates {
+		if !allowed[k] {
+			return nil, fmt.Errorf("parameter '%s' is not in the tunable allowlist", k)
+		}
+		val := strings.TrimSpace(v)
+		if val == "" || strings.EqualFold(val, "RESET") {
+			stmts = append(stmts, fmt.Sprintf("ALTER SYSTEM RESET %s;", k))
+			continue
+		}
+		if !validPGSettingValue.MatchString(val) {
+			return nil, fmt.Errorf("invalid value '%s' for parameter '%s'", val, k)
+		}
+		stmts = append(stmts, fmt.Sprintf("ALTER SYSTEM SET %s = '%s';", k, escapeSQL(val)))
+	}
+	if len(stmts) > 0 {
+		for _, stmt := range stmts {
+			if _, err := m.execPSQL(ctx, inst, "postgres", stmt); err != nil {
+				return nil, err
+			}
+		}
+		if _, err := m.execPSQL(ctx, inst, "postgres", "SELECT pg_reload_conf();"); err != nil {
+			return nil, err
+		}
+	}
+	return m.GetPostgresConfig(ctx, inst)
+}
+
+// RestartPostgres restarts the PostgreSQL container for an instance and waits until it is ready.
+func (m *Manager) RestartPostgres(ctx context.Context, inst models.OdooInstance) error {
+	if err := m.docker.RestartContainer(ctx, inst.DBContainerName, 15); err != nil {
+		return err
+	}
+	pgUser, _ := m.adminCredsForInstance(inst)
+	return m.waitPostgresReady(ctx, inst.DBContainerName, pgUser)
+}
+
+// RunMaintenance executes PostgreSQL maintenance actions ("vacuum_analyze" or "terminate_idle").
+func (m *Manager) RunMaintenance(ctx context.Context, inst models.OdooInstance, action, dbName string) (string, error) {
+	dbName = strings.TrimSpace(dbName)
+	if dbName != "" && !validDBName.MatchString(dbName) {
+		return "", fmt.Errorf("invalid database name '%s'", dbName)
+	}
+
+	switch action {
+	case "vacuum_analyze":
+		var targets []string
+		if dbName != "" {
+			targets = []string{dbName}
+		} else {
+			dbs, err := m.ListInstanceDatabases(ctx, inst)
+			if err != nil {
+				return "", err
+			}
+			for _, d := range dbs {
+				targets = append(targets, d.Name)
+			}
+		}
+		if len(targets) == 0 {
+			return "No databases to vacuum.", nil
+		}
+		for _, t := range targets {
+			if _, err := m.execPSQL(ctx, inst, t, "VACUUM (ANALYZE);"); err != nil {
+				return "", fmt.Errorf("vacuum %s failed: %w", t, err)
+			}
+		}
+		return fmt.Sprintf("VACUUM (ANALYZE) completed on %d database(s): %s", len(targets), strings.Join(targets, ", ")), nil
+
+	case "terminate_idle":
+		filter := "datname <> 'postgres'"
+		if dbName != "" {
+			filter = fmt.Sprintf("datname = '%s'", escapeSQL(dbName))
+		} else if inst.DBMode == models.DBModeShared {
+			filter = fmt.Sprintf("usename = '%s' AND datname <> 'postgres'", escapeSQL(inst.DBUser))
+		}
+		query := fmt.Sprintf("SELECT count(*) FROM (SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND state = 'idle' AND %s) t;", filter)
+		out, err := m.execPSQL(ctx, inst, "postgres", query)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Terminated %s idle connection(s).", strings.TrimSpace(out)), nil
+
+	default:
+		return "", fmt.Errorf("unknown maintenance action '%s'", action)
+	}
+}
+
+func formatSizeBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
