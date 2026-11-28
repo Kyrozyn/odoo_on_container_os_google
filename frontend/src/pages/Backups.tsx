@@ -458,7 +458,7 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
       <Modal open={!!restoreTarget} onClose={() => setRestoreTarget(null)} title={`Restore ${restoreTarget?.fileName}`}>
         <form onSubmit={handleRestoreExisting} className="space-y-4">
           <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
-            Warning: Target database will be dropped and recreated from this archive.
+            <strong>Note:</strong> Only the database matching <strong>Target Database Name</strong> on the selected <strong>Target Instance</strong> will be dropped and recreated if it already exists. Using a new database name will create a fresh database without affecting existing ones.
           </p>
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1">Target Instance</label>
@@ -473,7 +473,7 @@ export function Backups({ notify }: { notify: (msg: string, type?: 'success' | '
               ) : (
                 instances.map((i) => (
                   <option key={i.id} value={i.id}>
-                    {i.name} ({i.version})
+                    {i.name} (Odoo {i.version})
                   </option>
                 ))
               )}
