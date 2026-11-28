@@ -354,6 +354,103 @@ func postgresqlDashboardJSON(instanceName string) string {
         { "expr": "runodoo_container_memory_usage_bytes{role=\"postgres\"}", "legendFormat": "{{container}}", "refId": "A" }
       ],
       "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Buffer Hit vs Read (Cache vs Disk)",
+      "description": "Hit = blocks served from shared_buffers/OS cache. Read = blocks read from disk.",
+      "gridPos": { "x": 0, "y": 27, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "rate(pg_stat_database_blks_hit{instance=\"$instance\",datname=~\"$datname\"}[1m])", "legendFormat": "{{datname}} - Hit (Cache)", "refId": "A" },
+        { "expr": "rate(pg_stat_database_blks_read{instance=\"$instance\",datname=~\"$datname\"}[1m])", "legendFormat": "{{datname}} - Read (Disk)", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Locks, Deadlocks & Conflicts",
+      "gridPos": { "x": 12, "y": 27, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "sum by (mode) (pg_locks_count{instance=\"$instance\",datname=~\"$datname\"})", "legendFormat": "Lock: {{mode}}", "refId": "A" },
+        { "expr": "sum(rate(pg_stat_database_deadlocks{instance=\"$instance\",datname=~\"$datname\"}[5m]))", "legendFormat": "Deadlocks/s", "refId": "B" },
+        { "expr": "sum(rate(pg_stat_database_conflicts{instance=\"$instance\",datname=~\"$datname\"}[5m]))", "legendFormat": "Conflicts/s", "refId": "C" }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Temp Files & Disk Spill (Bytes/sec)",
+      "description": "High temp bytes indicate queries spilling to disk (consider increasing work_mem).",
+      "gridPos": { "x": 0, "y": 35, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "rate(pg_stat_database_temp_bytes{instance=\"$instance\",datname=~\"$datname\"}[1m])", "legendFormat": "{{datname}} - Temp Bytes/s", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "Bps" } }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Checkpoints & Background Writer",
+      "gridPos": { "x": 12, "y": 35, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "rate(pg_stat_bgwriter_buffers_checkpoint{instance=\"$instance\"}[1m])", "legendFormat": "Checkpoint Buffers/s", "refId": "A" },
+        { "expr": "rate(pg_stat_bgwriter_buffers_clean{instance=\"$instance\"}[1m])", "legendFormat": "BGWriter Clean/s", "refId": "B" },
+        { "expr": "rate(pg_stat_bgwriter_buffers_backend{instance=\"$instance\"}[1m])", "legendFormat": "Backend Direct Writes/s", "refId": "C" },
+        { "expr": "rate(pg_stat_bgwriter_checkpoints_timed{instance=\"$instance\"}[5m])", "legendFormat": "Timed Checkpoints/s", "refId": "D" },
+        { "expr": "rate(pg_stat_bgwriter_checkpoints_req{instance=\"$instance\"}[5m])", "legendFormat": "Requested Checkpoints/s", "refId": "E" }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Dead Tuples (Vacuum Needed)",
+      "description": "Rising dead tuples indicate table bloat; run VACUUM ANALYZE if autovacuum falls behind.",
+      "gridPos": { "x": 0, "y": 43, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "runodoo_pg_dead_tuples{instance=\"$instance\",db=~\"$datname\"}", "legendFormat": "{{db}} - Dead Tuples", "refId": "A" },
+        { "expr": "runodoo_pg_live_tuples{instance=\"$instance\",db=~\"$datname\"}", "legendFormat": "{{db}} - Live Tuples", "refId": "B" }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Dead Tuple Ratio (%) & Tables Needing Vacuum",
+      "gridPos": { "x": 12, "y": 43, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "runodoo_pg_dead_tuple_ratio_percent{instance=\"$instance\",db=~\"$datname\"}", "legendFormat": "{{db}} - Dead Ratio %", "refId": "A" },
+        { "expr": "runodoo_pg_tables_needing_vacuum{instance=\"$instance\",db=~\"$datname\"}", "legendFormat": "{{db}} - Tables Needing Vacuum", "refId": "B" }
+      ]
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Sequential Scans vs Index Scans / sec",
+      "gridPos": { "x": 0, "y": 51, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "rate(runodoo_pg_seq_scans_total{instance=\"$instance\",db=~\"$datname\"}[1m])", "legendFormat": "{{db}} - Seq Scans/s", "refId": "A" },
+        { "expr": "rate(runodoo_pg_idx_scans_total{instance=\"$instance\",db=~\"$datname\"}[1m])", "legendFormat": "{{db}} - Index Scans/s", "refId": "B" }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Longest Query & Idle-in-Transaction (Vacuum Blockers)",
+      "description": "Idle-in-transaction sessions prevent VACUUM from reclaiming dead tuples.",
+      "gridPos": { "x": 12, "y": 51, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "runodoo-prom" },
+      "targets": [
+        { "expr": "runodoo_pg_longest_query_seconds{instance=\"$instance\",db=~\"$datname\"}", "legendFormat": "{{db}} - Longest Query (s)", "refId": "A" },
+        { "expr": "runodoo_pg_idle_in_tx_count{instance=\"$instance\",db=~\"$datname\"}", "legendFormat": "{{db}} - Idle in Transaction", "refId": "B" }
+      ]
     }
   ]
 }

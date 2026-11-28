@@ -696,6 +696,14 @@ func (m *Manager) RenderMetrics(ctx context.Context, instanceFilter string) stri
 	sb.WriteString("# TYPE runodoo_odoo_attachments_count gauge\n")
 	sb.WriteString("# TYPE runodoo_odoo_attachments_bytes gauge\n")
 	sb.WriteString("# TYPE runodoo_odoo_mail_queue_pending gauge\n")
+	sb.WriteString("# TYPE runodoo_pg_dead_tuples gauge\n")
+	sb.WriteString("# TYPE runodoo_pg_live_tuples gauge\n")
+	sb.WriteString("# TYPE runodoo_pg_dead_tuple_ratio_percent gauge\n")
+	sb.WriteString("# TYPE runodoo_pg_tables_needing_vacuum gauge\n")
+	sb.WriteString("# TYPE runodoo_pg_seq_scans_total counter\n")
+	sb.WriteString("# TYPE runodoo_pg_idx_scans_total counter\n")
+	sb.WriteString("# TYPE runodoo_pg_longest_query_seconds gauge\n")
+	sb.WriteString("# TYPE runodoo_pg_idle_in_tx_count gauge\n")
 
 	seenPG := map[string]bool{}
 	httpClient := &http.Client{Timeout: 2 * time.Second}
@@ -764,6 +772,14 @@ func (m *Manager) RenderMetrics(ctx context.Context, instanceFilter string) stri
 				sb.WriteString(fmt.Sprintf("runodoo_odoo_attachments_count{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.attachmentsCount))
 				sb.WriteString(fmt.Sprintf("runodoo_odoo_attachments_bytes{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.attachmentsBytes))
 				sb.WriteString(fmt.Sprintf("runodoo_odoo_mail_queue_pending{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.mailQueuePending))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_dead_tuples{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.deadTuples))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_live_tuples{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.liveTuples))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_dead_tuple_ratio_percent{instance=%q,db=%q} %.2f\n", inst.Name, d.Name, om.deadTupleRatio))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_tables_needing_vacuum{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.tablesNeedVacuum))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_seq_scans_total{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.seqScans))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_idx_scans_total{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.idxScans))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_longest_query_seconds{instance=%q,db=%q} %.3f\n", inst.Name, d.Name, om.longestQuerySec))
+				sb.WriteString(fmt.Sprintf("runodoo_pg_idle_in_tx_count{instance=%q,db=%q} %d\n", inst.Name, d.Name, om.idleInTxCount))
 			}
 		}
 	}
@@ -779,6 +795,14 @@ type odooDBMetrics struct {
 	attachmentsCount int64
 	attachmentsBytes int64
 	mailQueuePending int64
+	deadTuples       int64
+	liveTuples       int64
+	deadTupleRatio   float64
+	tablesNeedVacuum int64
+	seqScans         int64
+	idxScans         int64
+	longestQuerySec  float64
+	idleInTxCount    int64
 }
 
 func (m *Manager) queryOdooDBMetrics(ctx context.Context, inst models.OdooInstance, dbName string) odooDBMetrics {
@@ -791,7 +815,15 @@ func (m *Manager) queryOdooDBMetrics(ctx context.Context, inst models.OdooInstan
 		COALESCE((SELECT count(*) FROM ir_module_module WHERE state = 'installed'), 0),
 		COALESCE((SELECT count(*) FROM ir_attachment), 0),
 		COALESCE((SELECT sum(file_size) FROM ir_attachment), 0),
-		COALESCE((SELECT count(*) FROM mail_mail WHERE state IN ('outgoing', 'exception')), 0);`
+		COALESCE((SELECT count(*) FROM mail_mail WHERE state IN ('outgoing', 'exception')), 0),
+		COALESCE((SELECT sum(n_dead_tup) FROM pg_stat_user_tables), 0),
+		COALESCE((SELECT sum(n_live_tup) FROM pg_stat_user_tables), 0),
+		COALESCE((SELECT round(sum(n_dead_tup)*100.0/NULLIF(sum(n_live_tup+n_dead_tup),0), 2) FROM pg_stat_user_tables), 0),
+		COALESCE((SELECT count(*) FROM pg_stat_user_tables WHERE n_dead_tup > 1000 OR (n_dead_tup > 100 AND n_dead_tup > n_live_tup * 0.1)), 0),
+		COALESCE((SELECT sum(seq_scan) FROM pg_stat_user_tables), 0),
+		COALESCE((SELECT sum(idx_scan) FROM pg_stat_user_tables), 0),
+		COALESCE((SELECT extract(epoch FROM max(now() - query_start)) FROM pg_stat_activity WHERE datname = current_database() AND state = 'active' AND pid <> pg_backend_pid()), 0),
+		COALESCE((SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'), 0);`
 
 	out, code, err := m.docker.Exec(ctx, inst.DBContainerName, []string{
 		"psql", "-U", pgUser, "-d", dbName, "-At", "-F", "|", "-c", query,
@@ -800,7 +832,7 @@ func (m *Manager) queryOdooDBMetrics(ctx context.Context, inst models.OdooInstan
 		return res
 	}
 	parts := strings.Split(strings.TrimSpace(out), "|")
-	if len(parts) >= 7 {
+	if len(parts) >= 15 {
 		res.activeUsers, _ = strconv.ParseInt(parts[0], 10, 64)
 		res.activeCrons, _ = strconv.ParseInt(parts[1], 10, 64)
 		res.overdueCrons, _ = strconv.ParseInt(parts[2], 10, 64)
@@ -808,6 +840,14 @@ func (m *Manager) queryOdooDBMetrics(ctx context.Context, inst models.OdooInstan
 		res.attachmentsCount, _ = strconv.ParseInt(parts[4], 10, 64)
 		res.attachmentsBytes, _ = strconv.ParseInt(parts[5], 10, 64)
 		res.mailQueuePending, _ = strconv.ParseInt(parts[6], 10, 64)
+		res.deadTuples, _ = strconv.ParseInt(parts[7], 10, 64)
+		res.liveTuples, _ = strconv.ParseInt(parts[8], 10, 64)
+		res.deadTupleRatio, _ = strconv.ParseFloat(parts[9], 64)
+		res.tablesNeedVacuum, _ = strconv.ParseInt(parts[10], 10, 64)
+		res.seqScans, _ = strconv.ParseInt(parts[11], 10, 64)
+		res.idxScans, _ = strconv.ParseInt(parts[12], 10, 64)
+		res.longestQuerySec, _ = strconv.ParseFloat(parts[13], 64)
+		res.idleInTxCount, _ = strconv.ParseInt(parts[14], 10, 64)
 	}
 	return res
 }
