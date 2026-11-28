@@ -22,10 +22,6 @@ import (
 )
 
 const (
-	PromContainer       = "runodoo-prometheus"
-	GrafanaContainer    = "runodoo-grafana"
-	PGExporterContainer = "runodoo-pg-exporter"
-
 	PromImage       = "prom/prometheus:latest"
 	GrafanaImage    = "grafana/grafana:latest"
 	PGExporterImage = "prometheuscommunity/postgres-exporter:latest"
@@ -44,11 +40,11 @@ func NewManager(cfg *config.Config, st *store.Store, dc *docker.Client, db *data
 }
 
 type ScrapeTarget struct {
-	Job        string `json:"job"`
-	Instance   string `json:"instance"`
-	Health     string `json:"health"`
-	LastError  string `json:"lastError,omitempty"`
-	ScrapeURL  string `json:"scrapeUrl"`
+	Job       string `json:"job"`
+	Instance  string `json:"instance"`
+	Health    string `json:"health"`
+	LastError string `json:"lastError,omitempty"`
+	ScrapeURL string `json:"scrapeUrl"`
 }
 
 type MonitoringStatus struct {
@@ -81,6 +77,30 @@ type UpdateConfigRequest struct {
 	AllowAnonymous          *bool                  `json:"allowAnonymous,omitempty"`
 }
 
+func containerNamesFor(inst models.OdooInstance) (prom, grafana, pgExp string) {
+	prom = inst.Monitoring.PrometheusContainer
+	if prom == "" {
+		prom = "runodoo-prom-" + inst.Name
+	}
+	grafana = inst.Monitoring.GrafanaContainer
+	if grafana == "" {
+		grafana = "runodoo-grafana-" + inst.Name
+	}
+	pgExp = inst.Monitoring.PGExporterContainer
+	if pgExp == "" {
+		pgExp = "runodoo-pgexp-" + inst.Name
+	}
+	return prom, grafana, pgExp
+}
+
+func (m *Manager) instMonDir(inst models.OdooInstance) string {
+	return filepath.Join(m.cfg.InstancesDir(), inst.Name, "monitoring")
+}
+
+func (m *Manager) hostInstMonDir(inst models.OdooInstance) string {
+	return filepath.Join(m.cfg.HostInstancesDir(), inst.Name, "monitoring")
+}
+
 func (m *Manager) inspectStatus(ctx context.Context, name string) string {
 	if name == "" {
 		return "not_found"
@@ -92,20 +112,35 @@ func (m *Manager) inspectStatus(ctx context.Context, name string) string {
 	return insp.State.Status
 }
 
-func (m *Manager) Status(ctx context.Context) MonitoringStatus {
+func (m *Manager) nextMonitoringPort() int {
 	st := m.store.Get()
-	mc := st.Monitoring
-	if mc.PrometheusContainer == "" {
-		mc.PrometheusContainer = PromContainer
+	used := map[int]bool{}
+	for _, i := range st.Instances {
+		used[i.HTTPPort] = true
+		used[i.LongpollingPort] = true
+		if i.Monitoring.HTTPPort > 0 {
+			used[i.Monitoring.HTTPPort] = true
+		}
 	}
-	if mc.GrafanaContainer == "" {
-		mc.GrafanaContainer = GrafanaContainer
+	port := 3001
+	for used[port] {
+		port++
 	}
-	if mc.PGExporterContainer == "" {
-		mc.PGExporterContainer = PGExporterContainer
+	return port
+}
+
+func (m *Manager) Status(ctx context.Context, inst models.OdooInstance) MonitoringStatus {
+	st := m.store.Get()
+	prom, grafana, pgExp := containerNamesFor(inst)
+	mc := inst.Monitoring
+	mc.PrometheusContainer = prom
+	mc.GrafanaContainer = grafana
+	mc.PGExporterContainer = pgExp
+	if mc.Domains == nil {
+		mc.Domains = []models.DomainConfig{}
 	}
 	if mc.HTTPPort == 0 {
-		mc.HTTPPort = 3001
+		mc.HTTPPort = m.nextMonitoringPort()
 	}
 	if mc.GrafanaUser == "" {
 		mc.GrafanaUser = "admin"
@@ -113,9 +148,9 @@ func (m *Manager) Status(ctx context.Context) MonitoringStatus {
 
 	res := MonitoringStatus{
 		Config:           mc,
-		PrometheusStatus: m.inspectStatus(ctx, mc.PrometheusContainer),
-		GrafanaStatus:    m.inspectStatus(ctx, mc.GrafanaContainer),
-		PGExporterStatus: m.inspectStatus(ctx, mc.PGExporterContainer),
+		PrometheusStatus: m.inspectStatus(ctx, prom),
+		GrafanaStatus:    m.inspectStatus(ctx, grafana),
+		PGExporterStatus: m.inspectStatus(ctx, pgExp),
 		Targets:          []ScrapeTarget{},
 	}
 
@@ -125,7 +160,7 @@ func (m *Manager) Status(ctx context.Context) MonitoringStatus {
 		if mc.RootSubdomainSSL {
 			scheme = "https"
 		}
-		res.RootSubdomainURL = fmt.Sprintf("%s://grafana.%s", scheme, root)
+		res.RootSubdomainURL = fmt.Sprintf("%s://grafana.%s.%s", scheme, inst.Name, root)
 	}
 
 	if len(mc.Domains) > 0 && proxy.NormalizeDomain(mc.Domains[0].Domain) != "" {
@@ -141,15 +176,15 @@ func (m *Manager) Status(ctx context.Context) MonitoringStatus {
 	}
 
 	if res.PrometheusStatus == "running" {
-		res.Targets = m.fetchPrometheusTargets(ctx)
+		res.Targets = m.fetchPrometheusTargets(ctx, prom)
 	}
 	return res
 }
 
-func (m *Manager) fetchPrometheusTargets(ctx context.Context) []ScrapeTarget {
+func (m *Manager) fetchPrometheusTargets(ctx context.Context, promContainer string) []ScrapeTarget {
 	c, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(c, http.MethodGet, "http://"+PromContainer+":9090/api/v1/targets", nil)
+	req, err := http.NewRequestWithContext(c, http.MethodGet, "http://"+promContainer+":9090/api/v1/targets", nil)
 	if err != nil {
 		return []ScrapeTarget{}
 	}
@@ -185,13 +220,28 @@ func (m *Manager) fetchPrometheusTargets(ctx context.Context) []ScrapeTarget {
 	return out
 }
 
-func (m *Manager) Install(ctx context.Context, req InstallRequest) (*MonitoringStatus, error) {
+func (m *Manager) updateInstanceMonitoring(instID string, fn func(*models.MonitoringConfig)) (models.OdooInstance, error) {
+	var updated models.OdooInstance
+	err := m.store.Update(func(st *models.State) error {
+		for i := range st.Instances {
+			if st.Instances[i].ID == instID {
+				fn(&st.Instances[i].Monitoring)
+				updated = st.Instances[i]
+				return nil
+			}
+		}
+		return fmt.Errorf("instance not found")
+	})
+	return updated, err
+}
+
+func (m *Manager) Install(ctx context.Context, inst models.OdooInstance, req InstallRequest) (*MonitoringStatus, error) {
 	if err := m.docker.EnsureNetwork(ctx, m.cfg.DockerNetwork); err != nil {
 		return nil, err
 	}
 	port := req.HTTPPort
 	if port <= 0 {
-		port = 3001
+		port = m.nextMonitoringPort()
 	}
 	user := strings.TrimSpace(req.GrafanaUser)
 	if user == "" {
@@ -206,12 +256,13 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*MonitoringS
 		domains = []models.DomainConfig{}
 	}
 
-	if err := m.store.Update(func(st *models.State) error {
-		st.Monitoring = models.MonitoringConfig{
+	prom, grafana, pgExp := containerNamesFor(inst)
+	updated, err := m.updateInstanceMonitoring(inst.ID, func(mc *models.MonitoringConfig) {
+		*mc = models.MonitoringConfig{
 			Installed:           true,
-			PrometheusContainer: PromContainer,
-			GrafanaContainer:    GrafanaContainer,
-			PGExporterContainer: PGExporterContainer,
+			PrometheusContainer: prom,
+			GrafanaContainer:    grafana,
+			PGExporterContainer: pgExp,
 			ExposePort:          req.ExposePort,
 			HTTPPort:            port,
 			UseRootSubdomain:    req.UseRootSubdomain,
@@ -220,12 +271,12 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*MonitoringS
 			GrafanaPassword:     pass,
 			AllowAnonymous:      req.AllowAnonymous,
 		}
-		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	if err := m.writeConfigFiles(); err != nil {
+	if err := m.writeConfigFiles(updated); err != nil {
 		return nil, err
 	}
 
@@ -237,13 +288,13 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*MonitoringS
 		}
 	}
 
-	if err := m.recreatePGExporter(ctx); err != nil {
+	if err := m.recreatePGExporter(ctx, updated); err != nil {
 		return nil, err
 	}
-	if err := m.recreatePrometheus(ctx); err != nil {
+	if err := m.recreatePrometheus(ctx, updated); err != nil {
 		return nil, err
 	}
-	if err := m.recreateGrafana(ctx); err != nil {
+	if err := m.recreateGrafana(ctx, updated); err != nil {
 		return nil, err
 	}
 
@@ -251,14 +302,13 @@ func (m *Manager) Install(ctx context.Context, req InstallRequest) (*MonitoringS
 		_ = m.proxy.SyncAll(ctx)
 	}
 
-	st := m.Status(ctx)
-	return &st, nil
+	status := m.Status(ctx, updated)
+	return &status, nil
 }
 
-func (m *Manager) UpdateConfig(ctx context.Context, req UpdateConfigRequest) (*MonitoringStatus, error) {
+func (m *Manager) UpdateConfig(ctx context.Context, inst models.OdooInstance, req UpdateConfigRequest) (*MonitoringStatus, error) {
 	var recreateGrafana bool
-	err := m.store.Update(func(st *models.State) error {
-		mc := &st.Monitoring
+	updated, err := m.updateInstanceMonitoring(inst.ID, func(mc *models.MonitoringConfig) {
 		if req.ExposePort != nil && *req.ExposePort != mc.ExposePort {
 			mc.ExposePort = *req.ExposePort
 			recreateGrafana = true
@@ -283,25 +333,24 @@ func (m *Manager) UpdateConfig(ctx context.Context, req UpdateConfigRequest) (*M
 			mc.AllowAnonymous = *req.AllowAnonymous
 			recreateGrafana = true
 		}
-		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	if recreateGrafana {
-		if err := m.recreateGrafana(ctx); err != nil {
+		if err := m.recreateGrafana(ctx, updated); err != nil {
 			return nil, err
 		}
 	}
 	if m.proxy != nil {
 		_ = m.proxy.SyncAll(ctx)
 	}
-	st := m.Status(ctx)
-	return &st, nil
+	status := m.Status(ctx, updated)
+	return &status, nil
 }
 
-func (m *Manager) UpdateGrafanaAccount(ctx context.Context, username, password string) (*MonitoringStatus, error) {
+func (m *Manager) UpdateGrafanaAccount(ctx context.Context, inst models.OdooInstance, username, password string) (*MonitoringStatus, error) {
 	username = strings.TrimSpace(username)
 	password = strings.TrimSpace(password)
 	if username == "" {
@@ -311,26 +360,26 @@ func (m *Manager) UpdateGrafanaAccount(ctx context.Context, username, password s
 		return nil, fmt.Errorf("Grafana password must be at least 4 characters")
 	}
 
-	if err := m.store.Update(func(st *models.State) error {
-		st.Monitoring.GrafanaUser = username
-		st.Monitoring.GrafanaPassword = password
-		return nil
-	}); err != nil {
+	updated, err := m.updateInstanceMonitoring(inst.ID, func(mc *models.MonitoringConfig) {
+		mc.GrafanaUser = username
+		mc.GrafanaPassword = password
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	// Update existing Grafana DB password via CLI, then recreate container so env stays in sync.
-	_, _, _ = m.docker.Exec(ctx, GrafanaContainer, []string{
+	_, grafana, _ := containerNamesFor(updated)
+	_, _, _ = m.docker.Exec(ctx, grafana, []string{
 		"grafana", "cli", "admin", "reset-admin-password", password,
 	}, nil)
-	if err := m.recreateGrafana(ctx); err != nil {
+	if err := m.recreateGrafana(ctx, updated); err != nil {
 		return nil, err
 	}
-	st := m.Status(ctx)
-	return &st, nil
+	status := m.Status(ctx, updated)
+	return &status, nil
 }
 
-func (m *Manager) IssueDomainSSL(ctx context.Context, domain string) (*MonitoringStatus, error) {
+func (m *Manager) IssueDomainSSL(ctx context.Context, inst models.OdooInstance, domain string) (*MonitoringStatus, error) {
 	if m.proxy == nil {
 		return nil, fmt.Errorf("proxy manager unavailable")
 	}
@@ -342,36 +391,37 @@ func (m *Manager) IssueDomainSSL(ctx context.Context, domain string) (*Monitorin
 
 	clean := proxy.NormalizeDomain(domain)
 	root := proxy.NormalizeDomain(st.Settings.RootDomain)
-	if err := m.store.Update(func(s *models.State) error {
-		if root != "" && clean == "grafana."+root {
-			s.Monitoring.RootSubdomainSSL = true
+	updated, err := m.updateInstanceMonitoring(inst.ID, func(mc *models.MonitoringConfig) {
+		if root != "" && clean == "grafana."+inst.Name+"."+root {
+			mc.RootSubdomainSSL = true
 		}
-		for i := range s.Monitoring.Domains {
-			if proxy.NormalizeDomain(s.Monitoring.Domains[i].Domain) == clean {
-				s.Monitoring.Domains[i].HasSSL = true
+		for i := range mc.Domains {
+			if proxy.NormalizeDomain(mc.Domains[i].Domain) == clean {
+				mc.Domains[i].HasSSL = true
 			}
 		}
-		return nil
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, err
 	}
 
 	_ = m.proxy.SyncAll(ctx)
-	status := m.Status(ctx)
+	status := m.Status(ctx, updated)
 	return &status, nil
 }
 
-func (m *Manager) Control(ctx context.Context, target, action string) error {
+func (m *Manager) Control(ctx context.Context, inst models.OdooInstance, target, action string) error {
+	prom, grafana, pgExp := containerNamesFor(inst)
 	var names []string
 	switch target {
 	case "prometheus":
-		names = []string{PromContainer}
+		names = []string{prom}
 	case "grafana":
-		names = []string{GrafanaContainer}
+		names = []string{grafana}
 	case "pg_exporter":
-		names = []string{PGExporterContainer}
+		names = []string{pgExp}
 	case "all":
-		names = []string{PGExporterContainer, PromContainer, GrafanaContainer}
+		names = []string{pgExp, prom, grafana}
 	default:
 		return fmt.Errorf("unknown target %q", target)
 	}
@@ -397,29 +447,30 @@ func (m *Manager) Control(ctx context.Context, target, action string) error {
 	return nil
 }
 
-func (m *Manager) Resync(ctx context.Context) (*MonitoringStatus, error) {
-	if err := m.writeConfigFiles(); err != nil {
+func (m *Manager) Resync(ctx context.Context, inst models.OdooInstance) (*MonitoringStatus, error) {
+	if err := m.writeConfigFiles(inst); err != nil {
 		return nil, err
 	}
-	_ = m.docker.RestartContainer(ctx, PGExporterContainer, 10)
-	// Reload Prometheus configuration via lifecycle API; fallback to restart if unavailable.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+PromContainer+":9090/-/reload", nil)
+	prom, grafana, pgExp := containerNamesFor(inst)
+	_ = m.docker.RestartContainer(ctx, pgExp, 10)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+prom+":9090/-/reload", nil)
 	if err == nil {
 		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 		if err != nil || resp.StatusCode >= 300 {
-			_ = m.docker.RestartContainer(ctx, PromContainer, 10)
+			_ = m.docker.RestartContainer(ctx, prom, 10)
 		}
 		if resp != nil {
 			resp.Body.Close()
 		}
 	}
-	_ = m.docker.RestartContainer(ctx, GrafanaContainer, 10)
-	st := m.Status(ctx)
-	return &st, nil
+	_ = m.docker.RestartContainer(ctx, grafana, 10)
+	status := m.Status(ctx, inst)
+	return &status, nil
 }
 
-func (m *Manager) writeConfigFiles() error {
-	base := m.cfg.MonitoringDir()
+func (m *Manager) writeConfigFiles(inst models.OdooInstance) error {
+	base := m.instMonDir(inst)
+	prom, _, _ := containerNamesFor(inst)
 	dirs := []string{
 		filepath.Join(base, "prometheus"),
 		filepath.Join(base, "prometheus-data"),
@@ -437,9 +488,9 @@ func (m *Manager) writeConfigFiles() error {
 	}
 
 	files := map[string]string{
-		filepath.Join(base, "prometheus", "prometheus.yml"):                             m.buildPrometheusConfig(),
-		filepath.Join(base, "pg_exporter", "postgres_exporter.yml"):                   m.buildPGExporterConfig(),
-		filepath.Join(base, "grafana", "provisioning", "datasources", "prometheus.yml"): grafanaDatasourceYAML(),
+		filepath.Join(base, "prometheus", "prometheus.yml"):                             m.buildPrometheusConfig(inst),
+		filepath.Join(base, "pg_exporter", "postgres_exporter.yml"):                   m.buildPGExporterConfig(inst),
+		filepath.Join(base, "grafana", "provisioning", "datasources", "prometheus.yml"): grafanaDatasourceYAML(prom),
 		filepath.Join(base, "grafana", "provisioning", "dashboards", "dashboards.yml"):  grafanaDashboardsProviderYAML(),
 		filepath.Join(base, "grafana", "dashboards", "odoo-apps.json"):                odooAppsDashboardJSON(),
 		filepath.Join(base, "grafana", "dashboards", "postgresql.json"):               postgresqlDashboardJSON(),
@@ -452,41 +503,30 @@ func (m *Manager) writeConfigFiles() error {
 	return nil
 }
 
-func (m *Manager) buildPrometheusConfig() string {
-	st := m.store.Get()
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf(`global:
+func (m *Manager) buildPrometheusConfig(inst models.OdooInstance) string {
+	_, _, pgExp := containerNamesFor(inst)
+	return fmt.Sprintf(`global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
 scrape_configs:
   - job_name: 'runodoo-apps'
     metrics_path: /internal/metrics
+    params:
+      instance: ['%s']
     static_configs:
       - targets: ['runodoo:%s']
+        labels:
+          instance: '%s'
 
   - job_name: 'postgres'
     metrics_path: /probe
     static_configs:
-`, m.cfg.Port))
-
-	sb.WriteString(fmt.Sprintf(`      - targets: ['%s:5432/postgres?sslmode=disable']
-        labels:
-          instance: 'shared'
-          container: '%s'
-`, st.SharedPostgres.ContainerName, st.SharedPostgres.ContainerName))
-
-	for _, inst := range st.Instances {
-		if inst.DBMode == models.DBModeDedicated {
-			sb.WriteString(fmt.Sprintf(`      - targets: ['%s:5432/postgres?sslmode=disable']
+      - targets: ['%s:5432/postgres?sslmode=disable']
         labels:
           instance: '%s'
           container: '%s'
-`, inst.DBContainerName, inst.Name, inst.DBContainerName))
-		}
-	}
-
-	sb.WriteString(`    relabel_configs:
+    relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target
       - source_labels: [instance]
@@ -494,38 +534,30 @@ scrape_configs:
       - source_labels: [__param_target]
         target_label: target
       - target_label: __address__
-        replacement: runodoo-pg-exporter:9187
-`)
-	return sb.String()
+        replacement: %s:9187
+`, inst.Name, m.cfg.Port, inst.Name, inst.DBContainerName, inst.Name, inst.DBContainerName, pgExp)
 }
 
-func (m *Manager) buildPGExporterConfig() string {
-	st := m.store.Get()
-	var sb strings.Builder
-	sb.WriteString("auth_modules:\n")
-	sb.WriteString(fmt.Sprintf("  shared:\n    type: userpass\n    userpass:\n      username: %q\n      password: %q\n",
-		st.SharedPostgres.SuperUser, st.SharedPostgres.SuperPassword))
-	for _, inst := range st.Instances {
-		if inst.DBMode == models.DBModeDedicated {
-			sb.WriteString(fmt.Sprintf("  %s:\n    type: userpass\n    userpass:\n      username: %q\n      password: %q\n",
-				inst.Name, inst.DBUser, inst.DBPassword))
-		}
-	}
-	return sb.String()
+func (m *Manager) buildPGExporterConfig(inst models.OdooInstance) string {
+	pgUser, pgPass := m.db.AdminCredsForInstance(inst)
+	return fmt.Sprintf("auth_modules:\n  %s:\n    type: userpass\n    userpass:\n      username: %q\n      password: %q\n",
+		inst.Name, pgUser, pgPass)
 }
 
-func (m *Manager) recreatePGExporter(ctx context.Context) error {
-	_ = m.docker.StopContainer(ctx, PGExporterContainer, 10)
-	_ = m.docker.RemoveContainer(ctx, PGExporterContainer, true)
+func (m *Manager) recreatePGExporter(ctx context.Context, inst models.OdooInstance) error {
+	_, _, pgExp := containerNamesFor(inst)
+	_ = m.docker.StopContainer(ctx, pgExp, 10)
+	_ = m.docker.RemoveContainer(ctx, pgExp, true)
 
-	hostMon := m.cfg.HostMonitoringDir()
+	hostMon := m.hostInstMonDir(inst)
 	_, err := m.docker.CreateContainer(ctx, docker.CreateContainerSpec{
-		Name:  PGExporterContainer,
+		Name:  pgExp,
 		Image: PGExporterImage,
 		Cmd:   []string{"--config.file=/etc/postgres_exporter/postgres_exporter.yml"},
 		Labels: map[string]string{
-			"runodoo.managed": "true",
-			"runodoo.role":    "monitoring-pg-exporter",
+			"runodoo.managed":  "true",
+			"runodoo.role":     "monitoring-pg-exporter",
+			"runodoo.instance": inst.Name,
 		},
 		Binds: []string{
 			fmt.Sprintf("%s/pg_exporter/postgres_exporter.yml:/etc/postgres_exporter/postgres_exporter.yml:ro", hostMon),
@@ -536,16 +568,17 @@ func (m *Manager) recreatePGExporter(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return m.docker.StartContainer(ctx, PGExporterContainer)
+	return m.docker.StartContainer(ctx, pgExp)
 }
 
-func (m *Manager) recreatePrometheus(ctx context.Context) error {
-	_ = m.docker.StopContainer(ctx, PromContainer, 10)
-	_ = m.docker.RemoveContainer(ctx, PromContainer, true)
+func (m *Manager) recreatePrometheus(ctx context.Context, inst models.OdooInstance) error {
+	prom, _, _ := containerNamesFor(inst)
+	_ = m.docker.StopContainer(ctx, prom, 10)
+	_ = m.docker.RemoveContainer(ctx, prom, true)
 
-	hostMon := m.cfg.HostMonitoringDir()
+	hostMon := m.hostInstMonDir(inst)
 	_, err := m.docker.CreateContainer(ctx, docker.CreateContainerSpec{
-		Name:  PromContainer,
+		Name:  prom,
 		Image: PromImage,
 		Cmd: []string{
 			"--config.file=/etc/prometheus/prometheus.yml",
@@ -554,8 +587,9 @@ func (m *Manager) recreatePrometheus(ctx context.Context) error {
 			"--web.enable-lifecycle",
 		},
 		Labels: map[string]string{
-			"runodoo.managed": "true",
-			"runodoo.role":    "monitoring-prometheus",
+			"runodoo.managed":  "true",
+			"runodoo.role":     "monitoring-prometheus",
+			"runodoo.instance": inst.Name,
 		},
 		Binds: []string{
 			fmt.Sprintf("%s/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro", hostMon),
@@ -567,16 +601,16 @@ func (m *Manager) recreatePrometheus(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return m.docker.StartContainer(ctx, PromContainer)
+	return m.docker.StartContainer(ctx, prom)
 }
 
-func (m *Manager) recreateGrafana(ctx context.Context) error {
-	_ = m.docker.StopContainer(ctx, GrafanaContainer, 10)
-	_ = m.docker.RemoveContainer(ctx, GrafanaContainer, true)
+func (m *Manager) recreateGrafana(ctx context.Context, inst models.OdooInstance) error {
+	_, grafana, _ := containerNamesFor(inst)
+	_ = m.docker.StopContainer(ctx, grafana, 10)
+	_ = m.docker.RemoveContainer(ctx, grafana, true)
 
-	st := m.store.Get()
-	mc := st.Monitoring
-	hostMon := m.cfg.HostMonitoringDir()
+	mc := inst.Monitoring
+	hostMon := m.hostInstMonDir(inst)
 
 	ports := map[string]string{}
 	if mc.ExposePort && mc.HTTPPort > 0 {
@@ -589,7 +623,7 @@ func (m *Manager) recreateGrafana(ctx context.Context) error {
 	}
 
 	_, err := m.docker.CreateContainer(ctx, docker.CreateContainerSpec{
-		Name:  GrafanaContainer,
+		Name:  grafana,
 		Image: GrafanaImage,
 		Env: []string{
 			"GF_SECURITY_ADMIN_USER=" + mc.GrafanaUser,
@@ -600,8 +634,9 @@ func (m *Manager) recreateGrafana(ctx context.Context) error {
 			"GF_SECURITY_ALLOW_EMBEDDING=true",
 		},
 		Labels: map[string]string{
-			"runodoo.managed": "true",
-			"runodoo.role":    "monitoring-grafana",
+			"runodoo.managed":  "true",
+			"runodoo.role":     "monitoring-grafana",
+			"runodoo.instance": inst.Name,
 		},
 		Binds: []string{
 			fmt.Sprintf("%s/grafana-data:/var/lib/grafana", hostMon),
@@ -615,11 +650,11 @@ func (m *Manager) recreateGrafana(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return m.docker.StartContainer(ctx, GrafanaContainer)
+	return m.docker.StartContainer(ctx, grafana)
 }
 
-// RenderMetrics outputs Prometheus exposition metrics for all Odoo instances and PostgreSQL containers.
-func (m *Manager) RenderMetrics(ctx context.Context) string {
+// RenderMetrics outputs Prometheus exposition metrics, optionally filtered to a single instance name.
+func (m *Manager) RenderMetrics(ctx context.Context, instanceFilter string) string {
 	st := m.store.Get()
 	var sb strings.Builder
 
@@ -643,7 +678,9 @@ func (m *Manager) RenderMetrics(ctx context.Context) string {
 	httpClient := &http.Client{Timeout: 2 * time.Second}
 
 	for _, inst := range st.Instances {
-		// Odoo container stats
+		if instanceFilter != "" && inst.Name != instanceFilter {
+			continue
+		}
 		up := 0
 		if insp, err := m.docker.InspectContainer(ctx, inst.ContainerName); err == nil && insp.State.Running {
 			up = 1
@@ -658,7 +695,6 @@ func (m *Manager) RenderMetrics(ctx context.Context) string {
 			}
 		}
 
-		// Postgres container stats (deduplicated for shared)
 		if !seenPG[inst.DBContainerName] {
 			seenPG[inst.DBContainerName] = true
 			pgUp := 0
@@ -676,7 +712,6 @@ func (m *Manager) RenderMetrics(ctx context.Context) string {
 			}
 		}
 
-		// Odoo HTTP health probe
 		httpUp := 0
 		var latency float64
 		if up == 1 {
@@ -696,7 +731,6 @@ func (m *Manager) RenderMetrics(ctx context.Context) string {
 		sb.WriteString(fmt.Sprintf("runodoo_odoo_http_response_seconds{instance=%q} %.6f\n", inst.Name, latency))
 		sb.WriteString(fmt.Sprintf("runodoo_odoo_workers_configured{instance=%q} %d\n", inst.Name, inst.Resources.Workers))
 
-		// Odoo internal DB metrics
 		if dbs, err := m.db.ListInstanceDatabases(ctx, inst); err == nil {
 			for _, d := range dbs {
 				om := m.queryOdooDBMetrics(ctx, inst, d.Name)

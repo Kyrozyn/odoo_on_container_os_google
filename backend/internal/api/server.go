@@ -156,14 +156,14 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("GET /api/containers/{id}/logs", s.handleContainerLogs)
 	protected.HandleFunc("GET /api/containers/{id}/stats", s.handleContainerStats)
 
-	// Monitoring (Prometheus & Grafana)
-	protected.HandleFunc("GET /api/monitoring/status", s.handleMonitoringStatus)
-	protected.HandleFunc("POST /api/monitoring/install", s.handleMonitoringInstall)
-	protected.HandleFunc("PUT /api/monitoring/config", s.handleMonitoringUpdateConfig)
-	protected.HandleFunc("POST /api/monitoring/account", s.handleMonitoringAccount)
-	protected.HandleFunc("POST /api/monitoring/ssl", s.handleMonitoringSSL)
-	protected.HandleFunc("POST /api/monitoring/control", s.handleMonitoringControl)
-	protected.HandleFunc("POST /api/monitoring/resync", s.handleMonitoringResync)
+	// Monitoring (Per-instance Prometheus & Grafana)
+	protected.HandleFunc("GET /api/instances/{id}/monitoring/status", s.handleMonitoringStatus)
+	protected.HandleFunc("POST /api/instances/{id}/monitoring/install", s.handleMonitoringInstall)
+	protected.HandleFunc("PUT /api/instances/{id}/monitoring/config", s.handleMonitoringUpdateConfig)
+	protected.HandleFunc("POST /api/instances/{id}/monitoring/account", s.handleMonitoringAccount)
+	protected.HandleFunc("POST /api/instances/{id}/monitoring/ssl", s.handleMonitoringSSL)
+	protected.HandleFunc("POST /api/instances/{id}/monitoring/control", s.handleMonitoringControl)
+	protected.HandleFunc("POST /api/instances/{id}/monitoring/resync", s.handleMonitoringResync)
 
 	mux.Handle("/api/", s.auth.Middleware(protected))
 
@@ -1517,20 +1517,30 @@ func (s *Server) handleInternalMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	_, _ = w.Write([]byte(s.monitoring.RenderMetrics(r.Context())))
+	_, _ = w.Write([]byte(s.monitoring.RenderMetrics(r.Context(), r.URL.Query().Get("instance"))))
 }
 
 func (s *Server) handleMonitoringStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.monitoring.Status(r.Context()))
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.monitoring.Status(r.Context(), inst))
 }
 
 func (s *Server) handleMonitoringInstall(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
 	var req monitoring.InstallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	status, err := s.monitoring.Install(r.Context(), req)
+	status, err := s.monitoring.Install(r.Context(), inst, req)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1539,12 +1549,17 @@ func (s *Server) handleMonitoringInstall(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleMonitoringUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
 	var req monitoring.UpdateConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	status, err := s.monitoring.UpdateConfig(r.Context(), req)
+	status, err := s.monitoring.UpdateConfig(r.Context(), inst, req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -1553,6 +1568,11 @@ func (s *Server) handleMonitoringUpdateConfig(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleMonitoringAccount(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -1561,7 +1581,7 @@ func (s *Server) handleMonitoringAccount(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	status, err := s.monitoring.UpdateGrafanaAccount(r.Context(), body.Username, body.Password)
+	status, err := s.monitoring.UpdateGrafanaAccount(r.Context(), inst, body.Username, body.Password)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -1570,6 +1590,11 @@ func (s *Server) handleMonitoringAccount(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleMonitoringSSL(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
 	var body struct {
 		Domain string `json:"domain"`
 	}
@@ -1577,7 +1602,7 @@ func (s *Server) handleMonitoringSSL(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "domain is required")
 		return
 	}
-	status, err := s.monitoring.IssueDomainSSL(r.Context(), body.Domain)
+	status, err := s.monitoring.IssueDomainSSL(r.Context(), inst, body.Domain)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -1586,6 +1611,11 @@ func (s *Server) handleMonitoringSSL(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMonitoringControl(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
 	var body struct {
 		Target string `json:"target"`
 		Action string `json:"action"`
@@ -1594,15 +1624,20 @@ func (s *Server) handleMonitoringControl(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if err := s.monitoring.Control(r.Context(), body.Target, body.Action); err != nil {
+	if err := s.monitoring.Control(r.Context(), inst, body.Target, body.Action); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, s.monitoring.Status(r.Context()))
+	writeJSON(w, http.StatusOK, s.monitoring.Status(r.Context(), inst))
 }
 
 func (s *Server) handleMonitoringResync(w http.ResponseWriter, r *http.Request) {
-	status, err := s.monitoring.Resync(r.Context())
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	status, err := s.monitoring.Resync(r.Context(), inst)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

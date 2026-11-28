@@ -77,9 +77,10 @@ type OdooInstance struct {
 	EnvVars           map[string]string `json:"envVars"`
 	ConfOptions       map[string]string `json:"confOptions"`
 	CustomConf        string            `json:"customConf"`
-	Resources       ResourceConfig    `json:"resources"`
-	CreatedAt       time.Time         `json:"createdAt"`
-	UpdatedAt       time.Time         `json:"updatedAt"`
+	Resources         ResourceConfig    `json:"resources"`
+	Monitoring        MonitoringConfig  `json:"monitoring"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
 }
 
 // InstanceWithStatus augments OdooInstance with live Docker container status.
@@ -236,7 +237,6 @@ type MonitoringConfig struct {
 type State struct {
 	Settings        PanelSettings        `json:"settings"`
 	SharedPostgres  SharedPostgresConfig `json:"sharedPostgres"`
-	Monitoring      MonitoringConfig     `json:"monitoring"`
 	Instances       []OdooInstance       `json:"instances"`
 	AddonRepos      []AddonRepo          `json:"addonRepos"`
 	Backups         []BackupRecord       `json:"backups"`

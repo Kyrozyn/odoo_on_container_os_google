@@ -367,43 +367,51 @@ export const api = {
   containerLogs: (id: string, tail = 200) => request<{ logs: string }>(`/api/containers/${id}/logs?tail=${tail}`),
   containerStats: (id: string) => request<ContainerStats>(`/api/containers/${id}/stats`),
 
-  // Monitoring (Prometheus & Grafana)
-  monitoringStatus: () => request<MonitoringStatus>('/api/monitoring/status'),
-  monitoringInstall: (payload: {
-    exposePort: boolean
-    httpPort: number
-    useRootSubdomain: boolean
-    domains: { domain: string; hasSsl: boolean; forceHttps: boolean }[]
-    grafanaUser: string
-    grafanaPassword: string
-    allowAnonymous: boolean
-  }) =>
-    request<MonitoringStatus>('/api/monitoring/install', {
+  // Monitoring (Per-instance Prometheus & Grafana)
+  monitoringStatus: (instanceId: string) =>
+    request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/status`),
+  monitoringInstall: (
+    instanceId: string,
+    payload: {
+      exposePort: boolean
+      httpPort: number
+      useRootSubdomain: boolean
+      domains: { domain: string; hasSsl: boolean; forceHttps: boolean }[]
+      grafanaUser: string
+      grafanaPassword: string
+      allowAnonymous: boolean
+    }
+  ) =>
+    request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/install`, {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  monitoringUpdateConfig: (payload: Partial<MonitoringConfig>) =>
-    request<MonitoringStatus>('/api/monitoring/config', {
+  monitoringUpdateConfig: (instanceId: string, payload: Partial<MonitoringConfig>) =>
+    request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/config`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
-  monitoringUpdateAccount: (username: string, password: string) =>
-    request<MonitoringStatus>('/api/monitoring/account', {
+  monitoringUpdateAccount: (instanceId: string, username: string, password: string) =>
+    request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/account`, {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
-  monitoringIssueSSL: (domain: string) =>
-    request<MonitoringStatus>('/api/monitoring/ssl', {
+  monitoringIssueSSL: (instanceId: string, domain: string) =>
+    request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/ssl`, {
       method: 'POST',
       body: JSON.stringify({ domain }),
     }),
-  monitoringControl: (target: 'prometheus' | 'grafana' | 'pg_exporter' | 'all', action: 'start' | 'stop' | 'restart') =>
-    request<MonitoringStatus>('/api/monitoring/control', {
+  monitoringControl: (
+    instanceId: string,
+    target: 'prometheus' | 'grafana' | 'pg_exporter' | 'all',
+    action: 'start' | 'stop' | 'restart'
+  ) =>
+    request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/control`, {
       method: 'POST',
       body: JSON.stringify({ target, action }),
     }),
-  monitoringResync: () =>
-    request<MonitoringStatus>('/api/monitoring/resync', {
+  monitoringResync: (instanceId: string) =>
+    request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/resync`, {
       method: 'POST',
     }),
 }

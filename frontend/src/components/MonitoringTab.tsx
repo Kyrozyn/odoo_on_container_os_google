@@ -68,6 +68,7 @@ export function MonitoringTab({
   const syncFormFromStatus = (st: MonitoringStatus) => {
     setExposePort(st.config.exposePort)
     setHttpPort(String(st.config.httpPort || 3001))
+    setInstPort(String(st.config.httpPort || 3001))
     setUseRootSub(st.config.useRootSubdomain)
     setAllowAnon(st.config.allowAnonymous)
     setAccUser(st.config.grafanaUser || 'admin')
@@ -77,7 +78,7 @@ export function MonitoringTab({
   const load = async () => {
     setLoading(true)
     try {
-      const res = await api.monitoringStatus()
+      const res = await api.monitoringStatus(instance.id)
       setStatus(res)
       syncFormFromStatus(res)
     } catch (err) {
@@ -89,7 +90,7 @@ export function MonitoringTab({
 
   useEffect(() => {
     load()
-  }, [])
+  }, [instance.id])
 
   const handleInstall = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -98,7 +99,7 @@ export function MonitoringTab({
       const domains: DomainConfig[] = instCustomDomain.trim()
         ? [{ domain: instCustomDomain.trim(), hasSsl: false, forceHttps: false }]
         : []
-      const res = await api.monitoringInstall({
+      const res = await api.monitoringInstall(instance.id, {
         exposePort: instExposePort,
         httpPort: parseInt(instPort, 10) || 3001,
         useRootSubdomain: instRootSub,
@@ -123,7 +124,7 @@ export function MonitoringTab({
   ) => {
     setBusy(`${target}:${action}`)
     try {
-      const res = await api.monitoringControl(target, action)
+      const res = await api.monitoringControl(instance.id, target, action)
       setStatus(res)
       notify(`Monitoring (${target}) ${action} succeeded`)
     } catch (err) {
@@ -136,7 +137,7 @@ export function MonitoringTab({
   const handleResync = async () => {
     setBusy('resync')
     try {
-      const res = await api.monitoringResync()
+      const res = await api.monitoringResync(instance.id)
       setStatus(res)
       notify('Dashboards & Prometheus scrape targets re-synced!')
     } catch (err) {
@@ -150,7 +151,7 @@ export function MonitoringTab({
     e.preventDefault()
     setBusy('save-access')
     try {
-      const res = await api.monitoringUpdateConfig({
+      const res = await api.monitoringUpdateConfig(instance.id, {
         exposePort,
         httpPort: parseInt(httpPort, 10) || 3001,
         useRootSubdomain: useRootSub,
@@ -175,7 +176,7 @@ export function MonitoringTab({
         ...(status.config.domains || []),
         { domain: newDomain.trim(), hasSsl: false, forceHttps: false },
       ]
-      const res = await api.monitoringUpdateConfig({ domains: nextDomains })
+      const res = await api.monitoringUpdateConfig(instance.id, { domains: nextDomains })
       setStatus(res)
       setNewDomain('')
       notify('Grafana domain added & Nginx synced!')
@@ -191,7 +192,7 @@ export function MonitoringTab({
     setBusy(`rm-domain:${idx}`)
     try {
       const nextDomains = (status.config.domains || []).filter((_, i) => i !== idx)
-      const res = await api.monitoringUpdateConfig({ domains: nextDomains })
+      const res = await api.monitoringUpdateConfig(instance.id, { domains: nextDomains })
       setStatus(res)
       notify('Domain removed')
     } catch (err) {
@@ -204,7 +205,7 @@ export function MonitoringTab({
   const handleIssueSSL = async (domain: string) => {
     setBusy(`ssl:${domain}`)
     try {
-      const res = await api.monitoringIssueSSL(domain)
+      const res = await api.monitoringIssueSSL(instance.id, domain)
       setStatus(res)
       notify(`SSL certificate issued for ${domain}!`)
     } catch (err) {
@@ -218,7 +219,7 @@ export function MonitoringTab({
     e.preventDefault()
     setBusy('save-account')
     try {
-      const res = await api.monitoringUpdateAccount(accUser, accPass)
+      const res = await api.monitoringUpdateAccount(instance.id, accUser, accPass)
       setStatus(res)
       syncFormFromStatus(res)
       notify('Grafana admin account updated!')
@@ -249,11 +250,12 @@ export function MonitoringTab({
             <Activity className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="text-base font-bold text-slate-900">Install Advanced Monitoring (Prometheus + Grafana)</h3>
+            <h3 className="text-base font-bold text-slate-900">Install Advanced Monitoring for {instance.name}</h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Menginstall 1 stack global (<code className="bg-slate-100 px-1 rounded">runodoo-prometheus</code>,{' '}
-              <code className="bg-slate-100 px-1 rounded">runodoo-grafana</code>, dan{' '}
-              <code className="bg-slate-100 px-1 rounded">runodoo-pg-exporter</code>) dengan 2 dashboard otomatis:
+              Menginstall stack khusus untuk <strong>{instance.name}</strong> (
+              <code className="bg-slate-100 px-1 rounded">runodoo-prom-{instance.name}</code>,{' '}
+              <code className="bg-slate-100 px-1 rounded">runodoo-grafana-{instance.name}</code>, dan{' '}
+              <code className="bg-slate-100 px-1 rounded">runodoo-pgexp-{instance.name}</code>) dengan 2 dashboard otomatis:
               <strong> Odoo Apps Monitoring</strong> &amp; <strong>PostgreSQL Database Monitoring</strong>.
             </p>
           </div>
@@ -304,7 +306,7 @@ export function MonitoringTab({
           {settings?.rootDomain && (
             <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
               <input type="checkbox" checked={instRootSub} onChange={(e) => setInstRootSub(e.target.checked)} />
-              Enable Root Subdomain (<code className="font-mono text-xs">grafana.{settings.rootDomain}</code>)
+              Enable Root Subdomain (<code className="font-mono text-xs">grafana.{instance.name}.{settings.rootDomain}</code>)
             </label>
           )}
           <div>
@@ -339,9 +341,8 @@ export function MonitoringTab({
   const odooDashUrl = grafanaBase
     ? `${grafanaBase}/d/runodoo-odoo-apps/runodoo-odoo-apps-monitoring?var-instance=${encodeURIComponent(instance.name)}`
     : ''
-  const pgTarget = instance.dbMode === 'dedicated' ? instance.name : 'shared'
   const pgDashUrl = grafanaBase
-    ? `${grafanaBase}/d/runodoo-postgresql/runodoo-postgresql-database-monitoring?var-instance=${encodeURIComponent(pgTarget)}`
+    ? `${grafanaBase}/d/runodoo-postgresql/runodoo-postgresql-database-monitoring?var-instance=${encodeURIComponent(instance.name)}`
     : ''
 
   return (
@@ -351,8 +352,8 @@ export function MonitoringTab({
         <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h3 className="text-sm font-semibold text-slate-900">Monitoring Stack</h3>
-              <p className="text-xs text-slate-500">Global Prometheus, Grafana &amp; PostgreSQL Exporter</p>
+              <h3 className="text-sm font-semibold text-slate-900">Monitoring Stack ({instance.name})</h3>
+              <p className="text-xs text-slate-500">Dedicated Prometheus, Grafana &amp; PostgreSQL Exporter</p>
             </div>
             <div className="flex gap-1.5">
               <button
@@ -427,7 +428,7 @@ export function MonitoringTab({
                 rel="noreferrer"
                 className="inline-flex items-center gap-1.5 rounded-lg border border-[#714B67]/40 bg-purple-50 px-3.5 py-2 text-xs font-semibold text-[#714B67] hover:bg-purple-100"
               >
-                <ExternalLink className="h-3.5 w-3.5" /> Open PostgreSQL Dashboard ({pgTarget})
+                <ExternalLink className="h-3.5 w-3.5" /> Open PostgreSQL Dashboard ({instance.name})
               </a>
             </div>
           ) : (
@@ -528,7 +529,7 @@ export function MonitoringTab({
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
               <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
                 <input type="checkbox" checked={useRootSub} onChange={(e) => setUseRootSub(e.target.checked)} />
-                <span className="font-mono text-xs">grafana.{settings.rootDomain}</span>
+                <span className="font-mono text-xs">grafana.{instance.name}.{settings.rootDomain}</span>
               </label>
               {status!.config.useRootSubdomain && (
                 status!.config.rootSubdomainSsl ? (
@@ -539,10 +540,10 @@ export function MonitoringTab({
                   <button
                     type="button"
                     disabled={!!busy}
-                    onClick={() => handleIssueSSL(`grafana.${settings.rootDomain}`)}
+                    onClick={() => handleIssueSSL(`grafana.${instance.name}.${settings.rootDomain}`)}
                     className="inline-flex items-center gap-1 rounded-lg border border-[#714B67] px-2.5 py-1 text-xs font-medium text-[#714B67] hover:bg-purple-50 cursor-pointer"
                   >
-                    {busy === `ssl:grafana.${settings.rootDomain}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />}
+                    {busy === `ssl:grafana.${instance.name}.${settings.rootDomain}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <ShieldCheck className="h-3 w-3" />}
                     Issue SSL
                   </button>
                 )

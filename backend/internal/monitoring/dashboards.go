@@ -1,16 +1,18 @@
 package monitoring
 
-func grafanaDatasourceYAML() string {
-	return `apiVersion: 1
+import "fmt"
+
+func grafanaDatasourceYAML(promContainer string) string {
+	return fmt.Sprintf(`apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
     uid: runodoo-prom
     access: proxy
-    url: http://runodoo-prometheus:9090
+    url: http://%s:9090
     isDefault: true
     editable: false
-`
+`, promContainer)
 }
 
 func grafanaDashboardsProviderYAML() string {

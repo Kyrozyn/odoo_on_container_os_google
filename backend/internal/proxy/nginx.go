@@ -192,17 +192,25 @@ func (m *Manager) writeConfigsWithFlag() (bool, error) {
 		}
 	}
 
-	// 4. Grafana monitoring vhosts
-	if st.Monitoring.Installed {
+	// 4. Per-instance Grafana monitoring vhosts
+	for _, inst := range st.Instances {
+		if !inst.Monitoring.Installed {
+			continue
+		}
 		var gDomains []models.DomainConfig
-		if st.Monitoring.UseRootSubdomain && st.Settings.RootDomain != "" {
+		if inst.Monitoring.UseRootSubdomain && st.Settings.RootDomain != "" {
 			gDomains = append(gDomains, models.DomainConfig{
-				Domain:     "grafana." + NormalizeDomain(st.Settings.RootDomain),
-				HasSSL:     st.Monitoring.RootSubdomainSSL,
-				ForceHTTPS: st.Monitoring.RootSubdomainForceHTTPS || st.Monitoring.RootSubdomainSSL,
+				Domain:     "grafana." + inst.Name + "." + NormalizeDomain(st.Settings.RootDomain),
+				HasSSL:     inst.Monitoring.RootSubdomainSSL,
+				ForceHTTPS: inst.Monitoring.RootSubdomainForceHTTPS || inst.Monitoring.RootSubdomainSSL,
 			})
 		}
-		gDomains = append(gDomains, st.Monitoring.Domains...)
+		gDomains = append(gDomains, inst.Monitoring.Domains...)
+
+		grafanaContainer := inst.Monitoring.GrafanaContainer
+		if grafanaContainer == "" {
+			grafanaContainer = "runodoo-grafana-" + inst.Name
+		}
 
 		var sb strings.Builder
 		for _, d := range gDomains {
@@ -210,11 +218,12 @@ func (m *Manager) writeConfigsWithFlag() (bool, error) {
 				continue
 			}
 			hasAnyDomain = true
-			sb.WriteString(m.renderGrafanaVhost(d))
+			sb.WriteString(m.renderGrafanaVhost(grafanaContainer, d))
 			sb.WriteString("\n")
 		}
 		if sb.Len() > 0 {
-			if err := os.WriteFile(filepath.Join(confDir, "runodoo-02-grafana.conf"), []byte(sb.String()), 0o644); err != nil {
+			fileName := fmt.Sprintf("runodoo-grafana-%s.conf", inst.Name)
+			if err := os.WriteFile(filepath.Join(confDir, fileName), []byte(sb.String()), 0o644); err != nil {
 				return false, err
 			}
 		}
@@ -431,15 +440,10 @@ server {
 	return sb.String()
 }
 
-func (m *Manager) renderGrafanaVhost(d models.DomainConfig) string {
+func (m *Manager) renderGrafanaVhost(grafanaContainer string, d models.DomainConfig) string {
 	domain := NormalizeDomain(d.Domain)
 	useSSL := d.HasSSL && m.CertExists(domain)
-	upstream := "runodoo-grafana:3000"
-	if m.store != nil {
-		if mc := m.store.Get().Monitoring; mc.GrafanaContainer != "" {
-			upstream = mc.GrafanaContainer + ":3000"
-		}
-	}
+	upstream := grafanaContainer + ":3000"
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf(`server {
