@@ -171,10 +171,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ secret, code }),
     }),
-  disable2FA: (password: string) =>
+  disable2FA: (password: string, code: string) =>
     request<{ ok: boolean; totpEnabled: boolean; token?: string }>('/api/auth/2fa/disable', {
       method: 'POST',
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, code }),
     }),
   revokeSessions: () =>
     request<{ ok: boolean; token?: string }>('/api/auth/revoke-sessions', { method: 'POST' }),

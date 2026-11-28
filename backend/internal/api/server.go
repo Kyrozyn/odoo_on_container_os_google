@@ -312,6 +312,7 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password string `json:"password"`
+		Code     string `json:"code"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -319,6 +320,10 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 	if !s.auth.VerifyPassword(body.Password) {
 		writeErr(w, http.StatusUnauthorized, "password is incorrect")
+		return
+	}
+	if !s.auth.VerifyTOTP(body.Code) {
+		writeErr(w, http.StatusUnauthorized, "invalid 2FA code")
 		return
 	}
 	if err := s.auth.DisableTOTP(); err != nil {

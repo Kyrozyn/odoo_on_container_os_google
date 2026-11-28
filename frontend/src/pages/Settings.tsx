@@ -28,6 +28,7 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
   const [totpSetup, setTotpSetup] = useState<{ secret: string; otpauthUri: string; qrDataUrl: string } | null>(null)
   const [totpCode, setTotpCode] = useState('')
   const [disable2faPass, setDisable2faPass] = useState('')
+  const [disable2faCode, setDisable2faCode] = useState('')
   const [busyAction, setBusyAction] = useState<
     'save' | 'ssl' | 'nginx' | 'port' | 'password' | 'security' | '2fa' | 'revoke' | null
   >(null)
@@ -235,9 +236,10 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
     e.preventDefault()
     setBusyAction('2fa')
     try {
-      const res = await api.disable2FA(disable2faPass)
+      const res = await api.disable2FA(disable2faPass, disable2faCode.trim())
       if (res.token) setToken(res.token)
       setDisable2faPass('')
+      setDisable2faCode('')
       await load()
       notify('2FA disabled.')
     } catch (err) {
@@ -596,8 +598,19 @@ export function Settings({ notify }: { notify: (msg: string, type?: 'success' | 
               required
               value={disable2faPass}
               onChange={(e) => setDisable2faPass(e.target.value)}
-              placeholder="Enter admin password to disable 2FA"
+              placeholder="Enter admin password"
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]{6}"
+              maxLength={6}
+              required
+              value={disable2faCode}
+              onChange={(e) => setDisable2faCode(e.target.value)}
+              placeholder="6-digit 2FA code from Authenticator"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm tracking-widest"
             />
             <button
               type="submit"
