@@ -2,10 +2,16 @@ package auth
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base32"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -22,6 +28,7 @@ type jwtHeader struct {
 
 type Claims struct {
 	Sub string `json:"sub"`
+	Ver int    `json:"ver"`
 	Iat int64  `json:"iat"`
 	Exp int64  `json:"exp"`
 }
@@ -41,10 +48,10 @@ func (m *Manager) VerifyPassword(password string) bool {
 	return err == nil
 }
 
-// ChangePassword hashes and stores a new admin password.
+// ChangePassword hashes and stores a new admin password and revokes existing sessions.
 func (m *Manager) ChangePassword(newPassword string) error {
-	if len(newPassword) < 6 {
-		return errors.New("password must be at least 6 characters")
+	if len(newPassword) < 10 {
+		return errors.New("password must be at least 10 characters")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err != nil {
@@ -53,6 +60,15 @@ func (m *Manager) ChangePassword(newPassword string) error {
 	return m.store.Update(func(st *models.State) error {
 		st.Settings.PasswordHash = string(hash)
 		st.Settings.PasswordChanged = true
+		st.Settings.TokenVersion++
+		return nil
+	})
+}
+
+// RevokeAllSessions increments TokenVersion so all previously issued JWTs become invalid.
+func (m *Manager) RevokeAllSessions() error {
+	return m.store.Update(func(st *models.State) error {
+		st.Settings.TokenVersion++
 		return nil
 	})
 }
@@ -64,6 +80,7 @@ func (m *Manager) GenerateToken() (string, error) {
 	headerBytes, _ := json.Marshal(jwtHeader{Alg: "HS256", Typ: "JWT"})
 	claimsBytes, _ := json.Marshal(Claims{
 		Sub: "admin",
+		Ver: st.Settings.TokenVersion,
 		Iat: now.Unix(),
 		Exp: now.Add(7 * 24 * time.Hour).Unix(),
 	})
@@ -108,7 +125,91 @@ func (m *Manager) ValidateToken(token string) (*Claims, error) {
 	if time.Now().Unix() > claims.Exp {
 		return nil, errors.New("token expired")
 	}
+	if claims.Ver != st.Settings.TokenVersion {
+		return nil, errors.New("token revoked")
+	}
 	return &claims, nil
+}
+
+// GenerateTOTPSecret creates a new random Base32 TOTP secret and otpauth URI.
+func GenerateTOTPSecret(issuer, account string) (secret, otpauthURI string, err error) {
+	buf := make([]byte, 20)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", err
+	}
+	secret = base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(buf)
+	otpauthURI = fmt.Sprintf("otpauth://totp/%s:%s?secret=%s&issuer=%s&algorithm=SHA1&digits=6&period=30",
+		issuer, account, secret, issuer)
+	return secret, otpauthURI, nil
+}
+
+// VerifyTOTPCode validates a 6-digit RFC 6238 TOTP code with +/- 1 step (30s) skew tolerance.
+func VerifyTOTPCode(secret, code string) bool {
+	return verifyTOTPAt(secret, code, time.Now())
+}
+
+func verifyTOTPAt(secret, code string, now time.Time) bool {
+	code = strings.TrimSpace(code)
+	if len(code) != 6 {
+		return false
+	}
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(strings.TrimSpace(secret)))
+	if err != nil || len(key) == 0 {
+		return false
+	}
+	step := now.Unix() / 30
+	for offset := int64(-1); offset <= 1; offset++ {
+		expected := totpAtCounter(key, uint64(step+offset))
+		if subtle.ConstantTimeCompare([]byte(code), []byte(expected)) == 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func totpAtCounter(key []byte, counter uint64) string {
+	var buf [8]byte
+	binary.BigEndian.PutUint64(buf[:], counter)
+	mac := hmac.New(sha1.New, key)
+	mac.Write(buf[:])
+	sum := mac.Sum(nil)
+	offset := sum[len(sum)-1] & 0x0f
+	bin := (uint32(sum[offset])&0x7f)<<24 |
+		(uint32(sum[offset+1])&0xff)<<16 |
+		(uint32(sum[offset+2])&0xff)<<8 |
+		(uint32(sum[offset+3]) & 0xff)
+	return fmt.Sprintf("%06d", bin%1000000)
+}
+
+// EnableTOTP verifies the user's code against secret and activates 2FA.
+func (m *Manager) EnableTOTP(secret, code string) error {
+	if !VerifyTOTPCode(secret, code) {
+		return errors.New("invalid 2FA verification code")
+	}
+	return m.store.Update(func(st *models.State) error {
+		st.Settings.TOTPSecret = strings.ToUpper(strings.TrimSpace(secret))
+		st.Settings.TOTPEnabled = true
+		return nil
+	})
+}
+
+// DisableTOTP turns off 2FA and revokes existing sessions.
+func (m *Manager) DisableTOTP() error {
+	return m.store.Update(func(st *models.State) error {
+		st.Settings.TOTPEnabled = false
+		st.Settings.TOTPSecret = ""
+		st.Settings.TokenVersion++
+		return nil
+	})
+}
+
+// VerifyTOTP checks the provided 6-digit code if 2FA is enabled.
+func (m *Manager) VerifyTOTP(code string) bool {
+	st := m.store.Get()
+	if !st.Settings.TOTPEnabled || st.Settings.TOTPSecret == "" {
+		return true
+	}
+	return VerifyTOTPCode(st.Settings.TOTPSecret, code)
 }
 
 // Middleware enforces JWT Bearer authentication (or ?token= query param for downloads).

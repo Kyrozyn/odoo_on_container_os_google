@@ -31,16 +31,17 @@ import (
 )
 
 type Server struct {
-	cfg        *config.Config
-	store      *store.Store
-	auth       *auth.Manager
-	docker     *docker.Client
-	odoo       *odoo.Manager
-	db         *database.Manager
-	addons     *addons.Manager
-	proxy      *proxy.Manager
-	backup     *backup.Manager
-	monitoring *monitoring.Manager
+	cfg         *config.Config
+	store       *store.Store
+	auth        *auth.Manager
+	rateLimiter *auth.LoginRateLimiter
+	docker      *docker.Client
+	odoo        *odoo.Manager
+	db          *database.Manager
+	addons      *addons.Manager
+	proxy       *proxy.Manager
+	backup      *backup.Manager
+	monitoring  *monitoring.Manager
 }
 
 func NewServer(
@@ -56,16 +57,17 @@ func NewServer(
 	mm *monitoring.Manager,
 ) *Server {
 	return &Server{
-		cfg:        cfg,
-		store:      st,
-		auth:       am,
-		docker:     dc,
-		odoo:       om,
-		db:         dbm,
-		addons:     adm,
-		proxy:      pm,
-		backup:     bm,
-		monitoring: mm,
+		cfg:         cfg,
+		store:       st,
+		auth:        am,
+		rateLimiter: auth.NewLoginRateLimiter(),
+		docker:      dc,
+		odoo:        om,
+		db:          dbm,
+		addons:      adm,
+		proxy:       pm,
+		backup:      bm,
+		monitoring:  mm,
 	}
 }
 
@@ -81,6 +83,10 @@ func (s *Server) Routes() http.Handler {
 	protected := http.NewServeMux()
 	protected.HandleFunc("GET /api/auth/me", s.handleMe)
 	protected.HandleFunc("POST /api/auth/change-password", s.handleChangePassword)
+	protected.HandleFunc("POST /api/auth/2fa/setup", s.handleTOTPSetup)
+	protected.HandleFunc("POST /api/auth/2fa/enable", s.handleTOTPEnable)
+	protected.HandleFunc("POST /api/auth/2fa/disable", s.handleTOTPDisable)
+	protected.HandleFunc("POST /api/auth/revoke-sessions", s.handleRevokeSessions)
 
 	// System & Settings
 	protected.HandleFunc("GET /api/system/info", s.handleSystemInfo)
@@ -179,27 +185,82 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "app": "RunOdoo"})
 }
 
+func (s *Server) clientIP(r *http.Request) string {
+	viaProxy := subtle.ConstantTimeCompare([]byte(r.Header.Get("X-RunOdoo-Proxy")), []byte(s.store.ProxyToken())) == 1
+	if viaProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if ip := strings.TrimSpace(strings.Split(xff, ",")[0]); ip != "" {
+				return ip
+			}
+		}
+		if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+			return xrip
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password string `json:"password"`
+		TOTPCode string `json:"totpCode"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	st := s.store.Get()
+	ip := s.clientIP(r)
+	if st.Settings.LoginRateLimitEnabled {
+		if allowed, retrySec := s.rateLimiter.Check(ip); !allowed {
+			writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed login attempts; try again in %ds", retrySec))
+			return
+		}
+	}
+
+	recordFail := func(defaultMsg string) {
+		if st.Settings.LoginRateLimitEnabled {
+			lockout := time.Duration(st.Settings.LoginLockoutMinutes) * time.Minute
+			if locked, retrySec := s.rateLimiter.RecordFailure(ip, st.Settings.LoginMaxAttempts, lockout); locked {
+				writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("too many failed login attempts; locked for %ds", retrySec))
+				return
+			}
+		}
+		writeErr(w, http.StatusUnauthorized, defaultMsg)
+	}
+
 	if !s.auth.VerifyPassword(body.Password) {
-		writeErr(w, http.StatusUnauthorized, "invalid password")
+		recordFail("invalid password")
 		return
 	}
+
+	if st.Settings.TOTPEnabled {
+		if strings.TrimSpace(body.TOTPCode) == "" {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"requiresTotp": true,
+			})
+			return
+		}
+		if !s.auth.VerifyTOTP(body.TOTPCode) {
+			recordFail("invalid 2FA code")
+			return
+		}
+	}
+
+	s.rateLimiter.RecordSuccess(ip)
 	token, err := s.auth.GenerateToken()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	st := s.store.Get()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":           token,
 		"passwordChanged": st.Settings.PasswordChanged,
+		"totpEnabled":     st.Settings.TOTPEnabled,
 	})
 }
 
@@ -208,8 +269,66 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":            "admin",
 		"passwordChanged": st.Settings.PasswordChanged,
+		"totpEnabled":     st.Settings.TOTPEnabled,
 		"rootDomain":      st.Settings.RootDomain,
 	})
+}
+
+func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	secret, uri, err := auth.GenerateTOTPSecret("RunOdoo", "admin")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"secret":     secret,
+		"otpauthUri": uri,
+	})
+}
+
+func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Secret string `json:"secret"`
+		Code   string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.auth.EnableTOTP(body.Secret, body.Code); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "totpEnabled": true})
+}
+
+func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !s.auth.VerifyPassword(body.Password) {
+		writeErr(w, http.StatusUnauthorized, "password is incorrect")
+		return
+	}
+	if err := s.auth.DisableTOTP(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	token, _ := s.auth.GenerateToken()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "totpEnabled": false, "token": token})
+}
+
+func (s *Server) handleRevokeSessions(w http.ResponseWriter, r *http.Request) {
+	if err := s.auth.RevokeAllSessions(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	token, _ := s.auth.GenerateToken()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token})
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +348,8 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	token, _ := s.auth.GenerateToken()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": token})
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
@@ -264,11 +384,14 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		RootDomain        *string `json:"rootDomain"`
-		PanelSubdomain    *string `json:"panelSubdomain"`
-		LetsEncryptEmail  *string `json:"letsEncryptEmail"`
-		PanelForceHTTPS   *bool   `json:"panelForceHttps"`
-		DisableDirectPort *bool   `json:"disableDirectPort"`
+		RootDomain            *string `json:"rootDomain"`
+		PanelSubdomain        *string `json:"panelSubdomain"`
+		LetsEncryptEmail      *string `json:"letsEncryptEmail"`
+		PanelForceHTTPS       *bool   `json:"panelForceHttps"`
+		DisableDirectPort     *bool   `json:"disableDirectPort"`
+		LoginRateLimitEnabled *bool   `json:"loginRateLimitEnabled"`
+		LoginMaxAttempts      *int    `json:"loginMaxAttempts"`
+		LoginLockoutMinutes   *int    `json:"loginLockoutMinutes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid request body")
@@ -296,6 +419,15 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.DisableDirectPort != nil {
 			st.Settings.DisableDirectPort = *body.DisableDirectPort
+		}
+		if body.LoginRateLimitEnabled != nil {
+			st.Settings.LoginRateLimitEnabled = *body.LoginRateLimitEnabled
+		}
+		if body.LoginMaxAttempts != nil && *body.LoginMaxAttempts > 0 {
+			st.Settings.LoginMaxAttempts = *body.LoginMaxAttempts
+		}
+		if body.LoginLockoutMinutes != nil && *body.LoginLockoutMinutes > 0 {
+			st.Settings.LoginLockoutMinutes = *body.LoginLockoutMinutes
 		}
 
 		if st.Settings.RootDomain == "" {

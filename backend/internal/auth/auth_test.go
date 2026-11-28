@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"encoding/base32"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/runodoo/runodoo/internal/store"
 )
@@ -49,5 +51,45 @@ func TestAuthPasswordAndJWT(t *testing.T) {
 	mgr2 := NewManager(st2)
 	if !mgr2.VerifyPassword("newSecret123") {
 		t.Fatal("expected reloaded store to retain new password")
+	}
+	if _, err := mgr2.ValidateToken(tok); err == nil {
+		t.Fatal("expected old token to be revoked after ChangePassword")
+	}
+	if err := mgr2.ChangePassword("short"); err == nil {
+		t.Fatal("expected password shorter than 10 chars to fail")
+	}
+}
+
+func TestTOTPAndRateLimiter(t *testing.T) {
+	secret, uri, err := GenerateTOTPSecret("RunOdoo", "admin")
+	if err != nil || secret == "" || uri == "" {
+		t.Fatalf("GenerateTOTPSecret failed: %v", err)
+	}
+	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
+	if err != nil {
+		t.Fatalf("decode secret failed: %v", err)
+	}
+	now := time.Now()
+	validCode := totpAtCounter(key, uint64(now.Unix()/30))
+	if !verifyTOTPAt(secret, validCode, now) {
+		t.Fatal("expected valid TOTP code to verify")
+	}
+	if verifyTOTPAt(secret, "000000", now) && validCode != "000000" {
+		t.Fatal("expected invalid TOTP code to fail")
+	}
+
+	rl := NewLoginRateLimiter()
+	for i := 0; i < 3; i++ {
+		if ok, _ := rl.Check("1.2.3.4"); !ok {
+			t.Fatalf("expected attempt %d to be allowed", i)
+		}
+		rl.RecordFailure("1.2.3.4", 3, time.Minute)
+	}
+	if ok, retry := rl.Check("1.2.3.4"); ok || retry <= 0 {
+		t.Fatalf("expected IP to be locked out after 3 failures, got ok=%v retry=%d", ok, retry)
+	}
+	rl.RecordSuccess("1.2.3.4")
+	if ok, _ := rl.Check("1.2.3.4"); !ok {
+		t.Fatal("expected IP to be unlocked after RecordSuccess")
 	}
 }

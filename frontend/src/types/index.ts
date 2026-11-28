@@ -203,6 +203,11 @@ export interface PanelSettings {
   letsEncryptEmail: string
   panelPort?: string
   passwordChanged: boolean
+  tokenVersion?: number
+  totpEnabled: boolean
+  loginRateLimitEnabled: boolean
+  loginMaxAttempts: number
+  loginLockoutMinutes: number
 }
 
 export interface SystemInfo {

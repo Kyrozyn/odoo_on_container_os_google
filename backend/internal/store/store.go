@@ -46,15 +46,21 @@ func New(filePath, defaultPassword, sharedPGContainer string) (*Store, error) {
 	}
 	s.state = models.State{
 		Settings: models.PanelSettings{
-			RootDomain:        ps.Settings.RootDomain,
-			PanelSubdomain:    ps.Settings.PanelSubdomain,
-			PanelHasSSL:       ps.Settings.PanelHasSSL,
-			PanelForceHTTPS:   ps.Settings.PanelForceHTTPS,
-			DisableDirectPort: ps.Settings.DisableDirectPort,
-			LetsEncryptEmail:  ps.Settings.LetsEncryptEmail,
-			PasswordHash:      ps.Settings.PasswordHash,
-			PasswordChanged:   ps.Settings.PasswordChanged,
-			JWTSecret:         ps.Settings.JWTSecret,
+			RootDomain:            ps.Settings.RootDomain,
+			PanelSubdomain:        ps.Settings.PanelSubdomain,
+			PanelHasSSL:           ps.Settings.PanelHasSSL,
+			PanelForceHTTPS:       ps.Settings.PanelForceHTTPS,
+			DisableDirectPort:     ps.Settings.DisableDirectPort,
+			LetsEncryptEmail:      ps.Settings.LetsEncryptEmail,
+			PasswordHash:          ps.Settings.PasswordHash,
+			PasswordChanged:       ps.Settings.PasswordChanged,
+			JWTSecret:             ps.Settings.JWTSecret,
+			TokenVersion:          ps.Settings.TokenVersion,
+			TOTPEnabled:           ps.Settings.TOTPEnabled,
+			TOTPSecret:            ps.Settings.TOTPSecret,
+			LoginRateLimitEnabled: ps.Settings.LoginRateLimitEnabled,
+			LoginMaxAttempts:      ps.Settings.LoginMaxAttempts,
+			LoginLockoutMinutes:   ps.Settings.LoginLockoutMinutes,
 		},
 		SharedPostgres:  ps.SharedPostgres,
 		Instances:       ps.Instances,
@@ -87,6 +93,18 @@ func New(filePath, defaultPassword, sharedPGContainer string) (*Store, error) {
 	}
 	if s.state.Settings.PanelSubdomain == "" {
 		s.state.Settings.PanelSubdomain = "panel"
+		changed = true
+	}
+	if s.state.Settings.TokenVersion == 0 {
+		s.state.Settings.TokenVersion = 1
+		changed = true
+	}
+	if s.state.Settings.LoginMaxAttempts <= 0 {
+		s.state.Settings.LoginMaxAttempts = 5
+		changed = true
+	}
+	if s.state.Settings.LoginLockoutMinutes <= 0 {
+		s.state.Settings.LoginLockoutMinutes = 10
 		changed = true
 	}
 	if s.state.Settings.PasswordHash == "" {
@@ -208,15 +226,21 @@ func (s *Store) NextAvailablePort(startPort int) int {
 
 // persistedState mirrors models.State but includes private auth fields for disk serialization.
 type persistedSettings struct {
-	RootDomain        string `json:"rootDomain"`
-	PanelSubdomain    string `json:"panelSubdomain"`
-	PanelHasSSL       bool   `json:"panelHasSsl"`
-	PanelForceHTTPS   bool   `json:"panelForceHttps"`
-	DisableDirectPort bool   `json:"disableDirectPort"`
-	LetsEncryptEmail  string `json:"letsEncryptEmail"`
-	PasswordHash      string `json:"passwordHash"`
-	PasswordChanged   bool   `json:"passwordChanged"`
-	JWTSecret         string `json:"jwtSecret"`
+	RootDomain            string `json:"rootDomain"`
+	PanelSubdomain        string `json:"panelSubdomain"`
+	PanelHasSSL           bool   `json:"panelHasSsl"`
+	PanelForceHTTPS       bool   `json:"panelForceHttps"`
+	DisableDirectPort     bool   `json:"disableDirectPort"`
+	LetsEncryptEmail      string `json:"letsEncryptEmail"`
+	PasswordHash          string `json:"passwordHash"`
+	PasswordChanged       bool   `json:"passwordChanged"`
+	JWTSecret             string `json:"jwtSecret"`
+	TokenVersion          int    `json:"tokenVersion"`
+	TOTPEnabled           bool   `json:"totpEnabled"`
+	TOTPSecret            string `json:"totpSecret"`
+	LoginRateLimitEnabled bool   `json:"loginRateLimitEnabled"`
+	LoginMaxAttempts      int    `json:"loginMaxAttempts"`
+	LoginLockoutMinutes   int    `json:"loginLockoutMinutes"`
 }
 
 type persistedState struct {
@@ -232,15 +256,21 @@ type persistedState struct {
 func (s *Store) saveLocked() error {
 	ps := persistedState{
 		Settings: persistedSettings{
-			RootDomain:        s.state.Settings.RootDomain,
-			PanelSubdomain:    s.state.Settings.PanelSubdomain,
-			PanelHasSSL:       s.state.Settings.PanelHasSSL,
-			PanelForceHTTPS:   s.state.Settings.PanelForceHTTPS,
-			DisableDirectPort: s.state.Settings.DisableDirectPort,
-			LetsEncryptEmail:  s.state.Settings.LetsEncryptEmail,
-			PasswordHash:      s.state.Settings.PasswordHash,
-			PasswordChanged:   s.state.Settings.PasswordChanged,
-			JWTSecret:         s.state.Settings.JWTSecret,
+			RootDomain:            s.state.Settings.RootDomain,
+			PanelSubdomain:        s.state.Settings.PanelSubdomain,
+			PanelHasSSL:           s.state.Settings.PanelHasSSL,
+			PanelForceHTTPS:       s.state.Settings.PanelForceHTTPS,
+			DisableDirectPort:     s.state.Settings.DisableDirectPort,
+			LetsEncryptEmail:      s.state.Settings.LetsEncryptEmail,
+			PasswordHash:          s.state.Settings.PasswordHash,
+			PasswordChanged:       s.state.Settings.PasswordChanged,
+			JWTSecret:             s.state.Settings.JWTSecret,
+			TokenVersion:          s.state.Settings.TokenVersion,
+			TOTPEnabled:           s.state.Settings.TOTPEnabled,
+			TOTPSecret:            s.state.Settings.TOTPSecret,
+			LoginRateLimitEnabled: s.state.Settings.LoginRateLimitEnabled,
+			LoginMaxAttempts:      s.state.Settings.LoginMaxAttempts,
+			LoginLockoutMinutes:   s.state.Settings.LoginLockoutMinutes,
 		},
 		SharedPostgres:  s.state.SharedPostgres,
 		Instances:       s.state.Instances,

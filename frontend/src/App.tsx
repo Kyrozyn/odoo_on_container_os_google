@@ -10,7 +10,7 @@ import {
   Server,
   Settings as SettingsIcon,
 } from 'lucide-react'
-import { api, clearToken, getToken } from './api/client'
+import { api, clearToken, getToken, setToken } from './api/client'
 import { Login } from './pages/Login'
 import { Dashboard } from './pages/Dashboard'
 import { Instances } from './pages/Instances'
@@ -53,6 +53,12 @@ class ErrorBoundary extends React.Component<
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(!!getToken())
+  const [forcePasswordChange, setForcePasswordChange] = useState<boolean>(false)
+  const [curPass, setCurPass] = useState('')
+  const [newPass, setNewPass] = useState('')
+  const [confirmPass, setConfirmPass] = useState('')
+  const [passErr, setPassErr] = useState('')
+  const [savingPass, setSavingPass] = useState(false)
   const [page, setPage] = useState<string>('dashboard')
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | null>(null)
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null)
@@ -66,13 +72,113 @@ export default function App() {
     const onUnauth = () => setAuthed(false)
     window.addEventListener('runodoo:unauthorized', onUnauth)
     if (getToken()) {
-      api.me().catch(() => setAuthed(false))
+      api
+        .me()
+        .then((me) => setForcePasswordChange(!me.passwordChanged))
+        .catch(() => setAuthed(false))
     }
     return () => window.removeEventListener('runodoo:unauthorized', onUnauth)
   }, [])
 
   if (!authed) {
-    return <Login onSuccess={() => setAuthed(true)} />
+    return (
+      <Login
+        onSuccess={(passwordChanged) => {
+          setAuthed(true)
+          if (passwordChanged === false) {
+            setForcePasswordChange(true)
+          } else {
+            api
+              .me()
+              .then((me) => setForcePasswordChange(!me.passwordChanged))
+              .catch(() => {})
+          }
+        }}
+      />
+    )
+  }
+
+  if (forcePasswordChange) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-900 p-4">
+        <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-2xl space-y-5">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900">Change Default Password</h1>
+            <p className="mt-1 text-xs text-slate-500">
+              Untuk keamanan, Anda wajib mengganti password default sebelum menggunakan panel RunOdoo (minimal 10 karakter).
+            </p>
+          </div>
+          <form
+            onSubmit={async (e) => {
+              e.preventDefault()
+              setPassErr('')
+              if (newPass.length < 10) {
+                setPassErr('New password must be at least 10 characters.')
+                return
+              }
+              if (newPass !== confirmPass) {
+                setPassErr('Password confirmation does not match.')
+                return
+              }
+              setSavingPass(true)
+              try {
+                const res = await api.changePassword(curPass, newPass)
+                if (res.token) setToken(res.token)
+                setForcePasswordChange(false)
+                setCurPass('')
+                setNewPass('')
+                setConfirmPass('')
+                notify('Admin password updated!')
+              } catch (err) {
+                setPassErr(err instanceof Error ? err.message : 'Failed updating password')
+              } finally {
+                setSavingPass(false)
+              }
+            }}
+            className="space-y-3"
+          >
+            <input
+              type="password"
+              required
+              value={curPass}
+              onChange={(e) => setCurPass(e.target.value)}
+              placeholder="Current default password"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+            <input
+              type="password"
+              required
+              minLength={10}
+              value={newPass}
+              onChange={(e) => setNewPass(e.target.value)}
+              placeholder="New strong password (min 10 chars)"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+            <input
+              type="password"
+              required
+              minLength={10}
+              value={confirmPass}
+              onChange={(e) => setConfirmPass(e.target.value)}
+              placeholder="Confirm new password"
+              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            />
+            {passErr && (
+              <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                {passErr}
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={savingPass}
+              className="w-full rounded-lg bg-[#714B67] py-2.5 text-sm font-semibold text-white hover:bg-[#5c3c54] disabled:opacity-60 cursor-pointer"
+            >
+              {savingPass ? 'Updating...' : 'Set New Admin Password'}
+            </button>
+          </form>
+        </div>
+      </div>
+    )
   }
 
   const navItems = [

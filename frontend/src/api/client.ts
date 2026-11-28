@@ -154,17 +154,30 @@ export interface PythonEnvInfo {
 
 export const api = {
   // Auth
-  login: (password: string) =>
-    request<{ token: string; passwordChanged: boolean }>('/api/auth/login', {
+  login: (password: string, totpCode?: string) =>
+    request<{ token?: string; passwordChanged?: boolean; totpEnabled?: boolean; requiresTotp?: boolean }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ password, totpCode: totpCode || '' }),
     }),
-  me: () => request<{ user: string; passwordChanged: boolean; rootDomain: string }>('/api/auth/me'),
+  me: () => request<{ user: string; passwordChanged: boolean; totpEnabled: boolean; rootDomain: string }>('/api/auth/me'),
   changePassword: (currentPassword: string, newPassword: string) =>
-    request<{ ok: boolean }>('/api/auth/change-password', {
+    request<{ ok: boolean; token?: string }>('/api/auth/change-password', {
       method: 'POST',
       body: JSON.stringify({ currentPassword, newPassword }),
     }),
+  setup2FA: () => request<{ secret: string; otpauthUri: string }>('/api/auth/2fa/setup', { method: 'POST' }),
+  enable2FA: (secret: string, code: string) =>
+    request<{ ok: boolean; totpEnabled: boolean }>('/api/auth/2fa/enable', {
+      method: 'POST',
+      body: JSON.stringify({ secret, code }),
+    }),
+  disable2FA: (password: string) =>
+    request<{ ok: boolean; totpEnabled: boolean; token?: string }>('/api/auth/2fa/disable', {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+  revokeSessions: () =>
+    request<{ ok: boolean; token?: string }>('/api/auth/revoke-sessions', { method: 'POST' }),
 
   // System & Settings
   systemInfo: () => request<SystemInfo>('/api/system/info'),

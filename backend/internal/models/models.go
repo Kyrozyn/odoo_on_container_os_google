@@ -204,16 +204,22 @@ type SharedPostgresConfig struct {
 
 // PanelSettings stores root domain, SSL, and auth configuration.
 type PanelSettings struct {
-	RootDomain        string `json:"rootDomain"`       // e.g., "runodoo.example.com" -> panel at panel.runodoo.example.com
-	PanelSubdomain    string `json:"panelSubdomain"`   // default: "panel"
-	PanelHasSSL       bool   `json:"panelHasSsl"`
-	PanelForceHTTPS   bool   `json:"panelForceHttps"`
-	DisableDirectPort bool   `json:"disableDirectPort"`
-	LetsEncryptEmail  string `json:"letsEncryptEmail"`
-	PanelPort         string `json:"panelPort,omitempty"`
-	PasswordHash      string `json:"-"` // never exposed in API JSON
-	PasswordChanged   bool   `json:"passwordChanged"`
-	JWTSecret         string `json:"-"`
+	RootDomain            string `json:"rootDomain"`       // e.g., "runodoo.example.com" -> panel at panel.runodoo.example.com
+	PanelSubdomain        string `json:"panelSubdomain"`   // default: "panel"
+	PanelHasSSL           bool   `json:"panelHasSsl"`
+	PanelForceHTTPS       bool   `json:"panelForceHttps"`
+	DisableDirectPort     bool   `json:"disableDirectPort"`
+	LetsEncryptEmail      string `json:"letsEncryptEmail"`
+	PanelPort             string `json:"panelPort,omitempty"`
+	PasswordHash          string `json:"-"` // never exposed in API JSON
+	PasswordChanged       bool   `json:"passwordChanged"`
+	JWTSecret             string `json:"-"`
+	TokenVersion          int    `json:"tokenVersion"`
+	TOTPEnabled           bool   `json:"totpEnabled"`
+	TOTPSecret            string `json:"-"`
+	LoginRateLimitEnabled bool   `json:"loginRateLimitEnabled"` // default false
+	LoginMaxAttempts      int    `json:"loginMaxAttempts"`      // default 5
+	LoginLockoutMinutes   int    `json:"loginLockoutMinutes"`   // default 10
 }
 
 // MonitoringConfig stores global Prometheus + Grafana + Postgres Exporter configuration.
