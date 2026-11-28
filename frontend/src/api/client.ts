@@ -386,6 +386,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  monitoringInstallStream: (
+    instanceId: string,
+    payload: {
+      exposePort: boolean
+      httpPort: number
+      useRootSubdomain: boolean
+      domains: { domain: string; hasSsl: boolean; forceHttps: boolean }[]
+      grafanaUser: string
+      grafanaPassword: string
+      allowAnonymous: boolean
+    },
+    onChunk: (text: string) => void
+  ) => streamExecRequest(`/api/instances/${instanceId}/monitoring/install/stream`, payload, onChunk),
   monitoringUpdateConfig: (instanceId: string, payload: Partial<MonitoringConfig>) =>
     request<MonitoringStatus>(`/api/instances/${instanceId}/monitoring/config`, {
       method: 'PUT',

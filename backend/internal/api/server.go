@@ -159,6 +159,7 @@ func (s *Server) Routes() http.Handler {
 	// Monitoring (Per-instance Prometheus & Grafana)
 	protected.HandleFunc("GET /api/instances/{id}/monitoring/status", s.handleMonitoringStatus)
 	protected.HandleFunc("POST /api/instances/{id}/monitoring/install", s.handleMonitoringInstall)
+	protected.HandleFunc("POST /api/instances/{id}/monitoring/install/stream", s.handleMonitoringInstallStream)
 	protected.HandleFunc("PUT /api/instances/{id}/monitoring/config", s.handleMonitoringUpdateConfig)
 	protected.HandleFunc("POST /api/instances/{id}/monitoring/account", s.handleMonitoringAccount)
 	protected.HandleFunc("POST /api/instances/{id}/monitoring/ssl", s.handleMonitoringSSL)
@@ -1546,6 +1547,37 @@ func (s *Server) handleMonitoringInstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleMonitoringInstallStream(w http.ResponseWriter, r *http.Request) {
+	inst, ok := s.store.FindInstance(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "instance not found")
+		return
+	}
+	var req monitoring.InstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, _ := w.(http.Flusher)
+	fw := &flushWriter{w: w, f: flusher}
+	_, _ = fmt.Fprintf(fw, "$ runodoo monitoring install --instance %s\n", inst.Name)
+
+	_, err := s.monitoring.InstallWithLog(r.Context(), inst, req, func(line string) {
+		_, _ = fmt.Fprint(fw, line)
+	})
+	if err != nil {
+		_, _ = fmt.Fprintf(fw, "\n__RUNODOO_ERROR__:%s\n", err.Error())
+		return
+	}
+	_, _ = fmt.Fprintf(fw, "\n__RUNODOO_EXIT__:0\n")
 }
 
 func (s *Server) handleMonitoringUpdateConfig(w http.ResponseWriter, r *http.Request) {

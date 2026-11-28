@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
   Activity,
   Copy,
@@ -52,6 +52,8 @@ export function MonitoringTab({
   const [instUser, setInstUser] = useState('admin')
   const [instPass, setInstPass] = useState('')
   const [instAnon, setInstAnon] = useState(false)
+  const [installLog, setInstallLog] = useState('')
+  const installLogRef = useRef<HTMLPreElement | null>(null)
 
   // Domain & Port edit state
   const [exposePort, setExposePort] = useState(true)
@@ -92,27 +94,39 @@ export function MonitoringTab({
     load()
   }, [instance.id])
 
+  useEffect(() => {
+    if (installLogRef.current) {
+      installLogRef.current.scrollTop = installLogRef.current.scrollHeight
+    }
+  }, [installLog])
+
   const handleInstall = async (e: React.FormEvent) => {
     e.preventDefault()
     setBusy('install')
+    setInstallLog('')
     try {
       const domains: DomainConfig[] = instCustomDomain.trim()
         ? [{ domain: instCustomDomain.trim(), hasSsl: false, forceHttps: false }]
         : []
-      const res = await api.monitoringInstall(instance.id, {
-        exposePort: instExposePort,
-        httpPort: parseInt(instPort, 10) || 3001,
-        useRootSubdomain: instRootSub,
-        domains,
-        grafanaUser: instUser.trim() || 'admin',
-        grafanaPassword: instPass.trim(),
-        allowAnonymous: instAnon,
-      })
-      setStatus(res)
-      syncFormFromStatus(res)
+      await api.monitoringInstallStream(
+        instance.id,
+        {
+          exposePort: instExposePort,
+          httpPort: parseInt(instPort, 10) || 3001,
+          useRootSubdomain: instRootSub,
+          domains,
+          grafanaUser: instUser.trim() || 'admin',
+          grafanaPassword: instPass.trim(),
+          allowAnonymous: instAnon,
+        },
+        (chunk) => setInstallLog((prev) => prev + chunk)
+      )
+      await load()
       notify('Prometheus & Grafana stack installed and running!')
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Failed installing monitoring stack', 'error')
+      const msg = err instanceof Error ? err.message : 'Failed installing monitoring stack'
+      setInstallLog((prev) => prev + `\nERROR: ${msg}\n`)
+      notify(msg, 'error')
     } finally {
       setBusy(null)
     }
@@ -333,6 +347,18 @@ export function MonitoringTab({
           {busy === 'install' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
           {busy === 'install' ? 'Pulling images & installing stack...' : 'Install Prometheus & Grafana'}
         </button>
+
+        {installLog && (
+          <div className="space-y-1.5">
+            <div className="text-xs font-semibold text-slate-700">Installation Output</div>
+            <pre
+              ref={installLogRef}
+              className="max-h-72 overflow-auto rounded-lg bg-slate-950 p-4 font-mono text-xs text-emerald-300 whitespace-pre-wrap"
+            >
+              {installLog}
+            </pre>
+          </div>
+        )}
       </form>
     )
   }

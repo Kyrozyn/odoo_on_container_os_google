@@ -236,6 +236,17 @@ func (m *Manager) updateInstanceMonitoring(instID string, fn func(*models.Monito
 }
 
 func (m *Manager) Install(ctx context.Context, inst models.OdooInstance, req InstallRequest) (*MonitoringStatus, error) {
+	return m.InstallWithLog(ctx, inst, req, nil)
+}
+
+func (m *Manager) InstallWithLog(ctx context.Context, inst models.OdooInstance, req InstallRequest, onLog func(string)) (*MonitoringStatus, error) {
+	logf := func(format string, args ...any) {
+		if onLog != nil {
+			onLog(fmt.Sprintf(format, args...))
+		}
+	}
+
+	logf("[1/6] Ensuring Docker network %s...\n", m.cfg.DockerNetwork)
 	if err := m.docker.EnsureNetwork(ctx, m.cfg.DockerNetwork); err != nil {
 		return nil, err
 	}
@@ -276,31 +287,43 @@ func (m *Manager) Install(ctx context.Context, inst models.OdooInstance, req Ins
 		return nil, err
 	}
 
+	logf("[2/6] Writing Prometheus, PG Exporter & Grafana provisioning configs...\n")
 	if err := m.writeConfigFiles(updated); err != nil {
 		return nil, err
 	}
 
+	logf("[3/6] Checking & pulling Docker images...\n")
 	for _, img := range []string{PGExporterImage, PromImage, GrafanaImage} {
-		if !m.docker.ImageExists(ctx, img) {
-			if err := m.docker.PullImage(ctx, img); err != nil {
-				return nil, fmt.Errorf("failed pulling %s: %w", img, err)
-			}
+		if m.docker.ImageExists(ctx, img) {
+			logf("  -> Image %s already cached locally.\n", img)
+			continue
+		}
+		logf("  -> Pulling %s...\n", img)
+		if err := m.docker.PullImageWithProgress(ctx, img, func(line string) {
+			logf("     %s\n", line)
+		}); err != nil {
+			return nil, fmt.Errorf("failed pulling %s: %w", img, err)
 		}
 	}
 
+	logf("[4/6] Creating & starting %s...\n", pgExp)
 	if err := m.recreatePGExporter(ctx, updated); err != nil {
 		return nil, err
 	}
+	logf("[5/6] Creating & starting %s...\n", prom)
 	if err := m.recreatePrometheus(ctx, updated); err != nil {
 		return nil, err
 	}
+	logf("[6/6] Creating & starting %s...\n", grafana)
 	if err := m.recreateGrafana(ctx, updated); err != nil {
 		return nil, err
 	}
 
 	if m.proxy != nil {
+		logf("Syncing Nginx proxy configuration...\n")
 		_ = m.proxy.SyncAll(ctx)
 	}
+	logf("Done! Monitoring stack for %s is running.\n", inst.Name)
 
 	status := m.Status(ctx, updated)
 	return &status, nil
