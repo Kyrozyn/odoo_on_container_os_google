@@ -13,6 +13,8 @@ import type {
   PanelSettings,
   PostgresMetrics,
   PostgresSetting,
+  MonitoringConfig,
+  MonitoringStatus,
   SystemInfo,
 } from '../types'
 
@@ -364,4 +366,44 @@ export const api = {
   restartContainer: (id: string) => request<{ ok: boolean }>(`/api/containers/${id}/restart`, { method: 'POST' }),
   containerLogs: (id: string, tail = 200) => request<{ logs: string }>(`/api/containers/${id}/logs?tail=${tail}`),
   containerStats: (id: string) => request<ContainerStats>(`/api/containers/${id}/stats`),
+
+  // Monitoring (Prometheus & Grafana)
+  monitoringStatus: () => request<MonitoringStatus>('/api/monitoring/status'),
+  monitoringInstall: (payload: {
+    exposePort: boolean
+    httpPort: number
+    useRootSubdomain: boolean
+    domains: { domain: string; hasSsl: boolean; forceHttps: boolean }[]
+    grafanaUser: string
+    grafanaPassword: string
+    allowAnonymous: boolean
+  }) =>
+    request<MonitoringStatus>('/api/monitoring/install', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  monitoringUpdateConfig: (payload: Partial<MonitoringConfig>) =>
+    request<MonitoringStatus>('/api/monitoring/config', {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
+  monitoringUpdateAccount: (username: string, password: string) =>
+    request<MonitoringStatus>('/api/monitoring/account', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    }),
+  monitoringIssueSSL: (domain: string) =>
+    request<MonitoringStatus>('/api/monitoring/ssl', {
+      method: 'POST',
+      body: JSON.stringify({ domain }),
+    }),
+  monitoringControl: (target: 'prometheus' | 'grafana' | 'pg_exporter' | 'all', action: 'start' | 'stop' | 'restart') =>
+    request<MonitoringStatus>('/api/monitoring/control', {
+      method: 'POST',
+      body: JSON.stringify({ target, action }),
+    }),
+  monitoringResync: () =>
+    request<MonitoringStatus>('/api/monitoring/resync', {
+      method: 'POST',
+    }),
 }

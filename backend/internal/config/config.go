@@ -84,6 +84,14 @@ func (c *Config) HostCertbotConfDir() string {
 	return filepath.Join(c.HostDataDir, "certbot", "conf")
 }
 
+func (c *Config) MonitoringDir() string {
+	return filepath.Join(c.DataDir, "monitoring")
+}
+
+func (c *Config) HostMonitoringDir() string {
+	return filepath.Join(c.HostDataDir, "monitoring")
+}
+
 // EnsureDirs creates all required runtime directories.
 func (c *Config) EnsureDirs() error {
 	dirs := []string{

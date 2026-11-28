@@ -192,6 +192,34 @@ func (m *Manager) writeConfigsWithFlag() (bool, error) {
 		}
 	}
 
+	// 4. Grafana monitoring vhosts
+	if st.Monitoring.Installed {
+		var gDomains []models.DomainConfig
+		if st.Monitoring.UseRootSubdomain && st.Settings.RootDomain != "" {
+			gDomains = append(gDomains, models.DomainConfig{
+				Domain:     "grafana." + NormalizeDomain(st.Settings.RootDomain),
+				HasSSL:     st.Monitoring.RootSubdomainSSL,
+				ForceHTTPS: st.Monitoring.RootSubdomainForceHTTPS || st.Monitoring.RootSubdomainSSL,
+			})
+		}
+		gDomains = append(gDomains, st.Monitoring.Domains...)
+
+		var sb strings.Builder
+		for _, d := range gDomains {
+			if strings.TrimSpace(d.Domain) == "" {
+				continue
+			}
+			hasAnyDomain = true
+			sb.WriteString(m.renderGrafanaVhost(d))
+			sb.WriteString("\n")
+		}
+		if sb.Len() > 0 {
+			if err := os.WriteFile(filepath.Join(confDir, "runodoo-02-grafana.conf"), []byte(sb.String()), 0o644); err != nil {
+				return false, err
+			}
+		}
+	}
+
 	return hasAnyDomain, nil
 }
 
@@ -400,6 +428,86 @@ server {
 }
 `, domain, domain, domain, upstream, proxyToken))
 	}
+	return sb.String()
+}
+
+func (m *Manager) renderGrafanaVhost(d models.DomainConfig) string {
+	domain := NormalizeDomain(d.Domain)
+	useSSL := d.HasSSL && m.CertExists(domain)
+	upstream := "runodoo-grafana:3000"
+	if m.store != nil {
+		if mc := m.store.Get().Monitoring; mc.GrafanaContainer != "" {
+			upstream = mc.GrafanaContainer + ":3000"
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf(`server {
+    listen 80;
+    server_name %s;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+`, domain))
+
+	if useSSL && d.ForceHTTPS {
+		sb.WriteString(`
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+`)
+	} else {
+		sb.WriteString(fmt.Sprintf(`
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $grafana_upstream %s;
+
+    location / {
+        proxy_pass http://$grafana_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+    }
+}
+`, upstream))
+	}
+
+	if useSSL {
+		sb.WriteString(fmt.Sprintf(`
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name %s;
+
+    ssl_certificate /etc/letsencrypt/live/%s/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/%s/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    resolver 127.0.0.11 valid=10s ipv6=off;
+    set $grafana_upstream %s;
+
+    location / {
+        proxy_pass http://$grafana_upstream;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+}
+`, domain, domain, domain, upstream))
+	}
+
 	return sb.String()
 }
 

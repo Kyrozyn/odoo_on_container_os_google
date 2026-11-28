@@ -57,11 +57,21 @@ func New(filePath, defaultPassword, sharedPGContainer string) (*Store, error) {
 			JWTSecret:         ps.Settings.JWTSecret,
 		},
 		SharedPostgres:  ps.SharedPostgres,
+		Monitoring:      ps.Monitoring,
 		Instances:       ps.Instances,
 		AddonRepos:      ps.AddonRepos,
 		Backups:         ps.Backups,
 		BackupSchedules: ps.BackupSchedules,
 		BackupJobs:      ps.BackupJobs,
+	}
+	if s.state.Monitoring.Domains == nil {
+		s.state.Monitoring.Domains = []models.DomainConfig{}
+	}
+	if s.state.Monitoring.HTTPPort == 0 {
+		s.state.Monitoring.HTTPPort = 3001
+	}
+	if s.state.Monitoring.GrafanaUser == "" {
+		s.state.Monitoring.GrafanaUser = "admin"
 	}
 	if s.state.Instances == nil {
 		s.state.Instances = []models.OdooInstance{}
@@ -222,6 +232,7 @@ type persistedSettings struct {
 type persistedState struct {
 	Settings        persistedSettings           `json:"settings"`
 	SharedPostgres  models.SharedPostgresConfig `json:"sharedPostgres"`
+	Monitoring      models.MonitoringConfig     `json:"monitoring"`
 	Instances       []models.OdooInstance       `json:"instances"`
 	AddonRepos      []models.AddonRepo          `json:"addonRepos"`
 	Backups         []models.BackupRecord       `json:"backups"`
@@ -243,6 +254,7 @@ func (s *Store) saveLocked() error {
 			JWTSecret:         s.state.Settings.JWTSecret,
 		},
 		SharedPostgres:  s.state.SharedPostgres,
+		Monitoring:      s.state.Monitoring,
 		Instances:       s.state.Instances,
 		AddonRepos:      s.state.AddonRepos,
 		Backups:         s.state.Backups,

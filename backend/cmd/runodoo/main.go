@@ -16,6 +16,7 @@ import (
 	"github.com/runodoo/runodoo/internal/config"
 	"github.com/runodoo/runodoo/internal/database"
 	"github.com/runodoo/runodoo/internal/docker"
+	"github.com/runodoo/runodoo/internal/monitoring"
 	"github.com/runodoo/runodoo/internal/odoo"
 	"github.com/runodoo/runodoo/internal/proxy"
 	"github.com/runodoo/runodoo/internal/store"
@@ -53,6 +54,7 @@ func main() {
 	dbMgr := database.NewManager(cfg, st, dc)
 	odooMgr := odoo.NewManager(cfg, st, dc, dbMgr, addonMgr, proxyMgr)
 	backupMgr := backup.NewManager(cfg, st, dc, dbMgr)
+	monMgr := monitoring.NewManager(cfg, st, dc, dbMgr, proxyMgr)
 
 	// Start scheduled backup cron runner
 	backupMgr.StartScheduler()
@@ -70,7 +72,7 @@ func main() {
 		}
 	}()
 
-	srv := api.NewServer(cfg, st, authMgr, dc, odooMgr, dbMgr, addonMgr, proxyMgr, backupMgr)
+	srv := api.NewServer(cfg, st, authMgr, dc, odooMgr, dbMgr, addonMgr, proxyMgr, backupMgr, monMgr)
 	httpServer := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           srv.Routes(),

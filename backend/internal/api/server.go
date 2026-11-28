@@ -23,6 +23,7 @@ import (
 	"github.com/runodoo/runodoo/internal/database"
 	"github.com/runodoo/runodoo/internal/docker"
 	"github.com/runodoo/runodoo/internal/models"
+	"github.com/runodoo/runodoo/internal/monitoring"
 	"github.com/runodoo/runodoo/internal/odoo"
 	"github.com/runodoo/runodoo/internal/proxy"
 	"github.com/runodoo/runodoo/internal/store"
@@ -30,15 +31,16 @@ import (
 )
 
 type Server struct {
-	cfg    *config.Config
-	store  *store.Store
-	auth   *auth.Manager
-	docker *docker.Client
-	odoo   *odoo.Manager
-	db     *database.Manager
-	addons *addons.Manager
-	proxy  *proxy.Manager
-	backup *backup.Manager
+	cfg        *config.Config
+	store      *store.Store
+	auth       *auth.Manager
+	docker     *docker.Client
+	odoo       *odoo.Manager
+	db         *database.Manager
+	addons     *addons.Manager
+	proxy      *proxy.Manager
+	backup     *backup.Manager
+	monitoring *monitoring.Manager
 }
 
 func NewServer(
@@ -51,26 +53,29 @@ func NewServer(
 	adm *addons.Manager,
 	pm *proxy.Manager,
 	bm *backup.Manager,
+	mm *monitoring.Manager,
 ) *Server {
 	return &Server{
-		cfg:    cfg,
-		store:  st,
-		auth:   am,
-		docker: dc,
-		odoo:   om,
-		db:     dbm,
-		addons: adm,
-		proxy:  pm,
-		backup: bm,
+		cfg:        cfg,
+		store:      st,
+		auth:       am,
+		docker:     dc,
+		odoo:       om,
+		db:         dbm,
+		addons:     adm,
+		proxy:      pm,
+		backup:     bm,
+		monitoring: mm,
 	}
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// Public routes
+	// Public & internal routes
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("GET /internal/metrics", s.handleInternalMetrics)
 
 	// Protected API routes
 	protected := http.NewServeMux()
@@ -150,6 +155,15 @@ func (s *Server) Routes() http.Handler {
 	protected.HandleFunc("POST /api/containers/{id}/restart", s.handleContainerRestart)
 	protected.HandleFunc("GET /api/containers/{id}/logs", s.handleContainerLogs)
 	protected.HandleFunc("GET /api/containers/{id}/stats", s.handleContainerStats)
+
+	// Monitoring (Prometheus & Grafana)
+	protected.HandleFunc("GET /api/monitoring/status", s.handleMonitoringStatus)
+	protected.HandleFunc("POST /api/monitoring/install", s.handleMonitoringInstall)
+	protected.HandleFunc("PUT /api/monitoring/config", s.handleMonitoringUpdateConfig)
+	protected.HandleFunc("POST /api/monitoring/account", s.handleMonitoringAccount)
+	protected.HandleFunc("POST /api/monitoring/ssl", s.handleMonitoringSSL)
+	protected.HandleFunc("POST /api/monitoring/control", s.handleMonitoringControl)
+	protected.HandleFunc("POST /api/monitoring/resync", s.handleMonitoringResync)
 
 	mux.Handle("/api/", s.auth.Middleware(protected))
 
@@ -1486,6 +1500,116 @@ func (s *Server) handleContainerStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stats)
 }
 
+// --- Monitoring (Prometheus & Grafana) ---
+
+func isPrivateOrLoopback(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
+}
+
+func (s *Server) handleInternalMetrics(w http.ResponseWriter, r *http.Request) {
+	if !isPrivateOrLoopback(r.RemoteAddr) {
+		writeErr(w, http.StatusForbidden, "metrics endpoint is internal only")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	_, _ = w.Write([]byte(s.monitoring.RenderMetrics(r.Context())))
+}
+
+func (s *Server) handleMonitoringStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.monitoring.Status(r.Context()))
+}
+
+func (s *Server) handleMonitoringInstall(w http.ResponseWriter, r *http.Request) {
+	var req monitoring.InstallRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	status, err := s.monitoring.Install(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleMonitoringUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	var req monitoring.UpdateConfigRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	status, err := s.monitoring.UpdateConfig(r.Context(), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleMonitoringAccount(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	status, err := s.monitoring.UpdateGrafanaAccount(r.Context(), body.Username, body.Password)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleMonitoringSSL(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Domain string `json:"domain"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Domain) == "" {
+		writeErr(w, http.StatusBadRequest, "domain is required")
+		return
+	}
+	status, err := s.monitoring.IssueDomainSSL(r.Context(), body.Domain)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *Server) handleMonitoringControl(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Target string `json:"target"`
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := s.monitoring.Control(r.Context(), body.Target, body.Action); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.monitoring.Status(r.Context()))
+}
+
+func (s *Server) handleMonitoringResync(w http.ResponseWriter, r *http.Request) {
+	status, err := s.monitoring.Resync(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
 // --- Static SPA Fallback ---
 
 func (s *Server) spaHandler() http.Handler {
@@ -1539,7 +1663,7 @@ func hostWithoutPort(host string) string {
 
 func (s *Server) withPanelAccessControl(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/health" {
+		if r.URL.Path == "/api/health" || r.URL.Path == "/internal/metrics" {
 			next.ServeHTTP(w, r)
 			return
 		}

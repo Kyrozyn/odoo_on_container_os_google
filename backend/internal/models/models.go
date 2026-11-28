@@ -215,10 +215,28 @@ type PanelSettings struct {
 	JWTSecret         string `json:"-"`
 }
 
+// MonitoringConfig stores global Prometheus + Grafana + Postgres Exporter configuration.
+type MonitoringConfig struct {
+	Installed               bool           `json:"installed"`
+	PrometheusContainer     string         `json:"prometheusContainer"`
+	GrafanaContainer        string         `json:"grafanaContainer"`
+	PGExporterContainer     string         `json:"pgExporterContainer"`
+	ExposePort              bool           `json:"exposePort"`
+	HTTPPort                int            `json:"httpPort"`
+	UseRootSubdomain        bool           `json:"useRootSubdomain"`
+	RootSubdomainSSL        bool           `json:"rootSubdomainSsl"`
+	RootSubdomainForceHTTPS bool           `json:"rootSubdomainForceHttps"`
+	Domains                 []DomainConfig `json:"domains"`
+	GrafanaUser             string         `json:"grafanaUser"`
+	GrafanaPassword         string         `json:"grafanaPassword"`
+	AllowAnonymous          bool           `json:"allowAnonymous"`
+}
+
 // State is the root persistent JSON document.
 type State struct {
 	Settings        PanelSettings        `json:"settings"`
 	SharedPostgres  SharedPostgresConfig `json:"sharedPostgres"`
+	Monitoring      MonitoringConfig     `json:"monitoring"`
 	Instances       []OdooInstance       `json:"instances"`
 	AddonRepos      []AddonRepo          `json:"addonRepos"`
 	Backups         []BackupRecord       `json:"backups"`

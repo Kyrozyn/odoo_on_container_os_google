@@ -118,6 +118,40 @@ export interface PostgresSetting {
   source: string
 }
 
+export interface MonitoringConfig {
+  installed: boolean
+  prometheusContainer: string
+  grafanaContainer: string
+  pgExporterContainer: string
+  exposePort: boolean
+  httpPort: number
+  useRootSubdomain: boolean
+  rootSubdomainSsl: boolean
+  rootSubdomainForceHttps: boolean
+  domains: DomainConfig[]
+  grafanaUser: string
+  grafanaPassword: string
+  allowAnonymous: boolean
+}
+
+export interface ScrapeTarget {
+  job: string
+  instance: string
+  health: string
+  lastError?: string
+  scrapeUrl: string
+}
+
+export interface MonitoringStatus {
+  config: MonitoringConfig
+  prometheusStatus: string
+  grafanaStatus: string
+  pgExporterStatus: string
+  primaryUrl: string
+  rootSubdomainUrl: string
+  targets: ScrapeTarget[]
+}
+
 export interface BackupRecord {
   id: string
   instanceId: string

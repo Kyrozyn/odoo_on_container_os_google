@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import {
+  Activity,
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
@@ -28,8 +29,9 @@ import type { AddonModule, AddonRepo, ContainerStats, DatabaseInfo, DeployProgre
 import { Modal, StatusBadge } from '../components/UI'
 import { CreateDatabaseModal } from '../components/CreateDatabaseModal'
 import { ContainerTerminal } from '../components/ContainerTerminal'
+import { MonitoringTab } from '../components/MonitoringTab'
 
-type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'python' | 'config' | 'logs' | 'terminal'
+type Tab = 'overview' | 'domains' | 'databases' | 'addons' | 'python' | 'config' | 'monitoring' | 'logs' | 'terminal'
 
 export function InstanceDetail({
   instanceId,
@@ -479,6 +481,7 @@ export function InstanceDetail({
     { id: 'addons', label: 'Addons', icon: <Puzzle className="h-4 w-4" /> },
     { id: 'python', label: 'Python Libs', icon: <Package className="h-4 w-4" /> },
     { id: 'config', label: 'odoo.conf', icon: <FileCode className="h-4 w-4" /> },
+    { id: 'monitoring', label: 'Monitoring', icon: <Activity className="h-4 w-4" /> },
     { id: 'logs', label: 'Logs', icon: <Terminal className="h-4 w-4" /> },
     { id: 'terminal', label: 'Terminal', icon: <Terminal className="h-4 w-4" /> },
   ]
@@ -1984,6 +1987,10 @@ export function InstanceDetail({
             </pre>
           </div>
         </div>
+      )}
+
+      {tab === 'monitoring' && (
+        <MonitoringTab instance={inst} settings={settings} notify={notify} />
       )}
 
       {tab === 'logs' && (
