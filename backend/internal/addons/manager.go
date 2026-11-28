@@ -397,13 +397,27 @@ func extractZipSafe(zipPath, destDir string) error {
 	}
 	defer r.Close()
 
-	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
+	absDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return err
+	}
+	destPrefix := absDest + string(os.PathSeparator)
 	for _, f := range r.File {
 		if strings.HasPrefix(f.Name, "__MACOSX/") {
 			continue
 		}
-		target := filepath.Join(destDir, f.Name)
-		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), cleanDest) && filepath.Clean(target) != filepath.Clean(destDir) {
+		if f.Name == "" || filepath.IsAbs(f.Name) {
+			return fmt.Errorf("illegal file path in zip: %s", f.Name)
+		}
+		cleaned := filepath.Clean(filepath.FromSlash(strings.ReplaceAll(f.Name, "\\", "/")))
+		if cleaned == "." {
+			continue
+		}
+		if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("illegal file path in zip: %s", f.Name)
+		}
+		target, err := filepath.Abs(filepath.Join(absDest, cleaned))
+		if err != nil || !strings.HasPrefix(target, destPrefix) {
 			return fmt.Errorf("illegal file path in zip: %s", f.Name)
 		}
 		if f.FileInfo().IsDir() {

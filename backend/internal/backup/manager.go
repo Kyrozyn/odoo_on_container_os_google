@@ -526,10 +526,21 @@ func (m *Manager) restoreBackupWithStep(ctx context.Context, inst models.OdooIns
 	defer r.Close()
 
 	var dumpFound bool
-	cleanTmp := filepath.Clean(tmpDir) + string(os.PathSeparator)
+	absTmp, err := filepath.Abs(tmpDir)
+	if err != nil {
+		return err
+	}
+	tmpPrefix := absTmp + string(os.PathSeparator)
 	for _, f := range r.File {
-		target := filepath.Join(tmpDir, f.Name)
-		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), cleanTmp) && filepath.Clean(target) != filepath.Clean(tmpDir) {
+		if f.Name == "" || filepath.IsAbs(f.Name) {
+			continue
+		}
+		cleaned := filepath.Clean(filepath.FromSlash(strings.ReplaceAll(f.Name, "\\", "/")))
+		if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
+			continue
+		}
+		target, err := filepath.Abs(filepath.Join(absTmp, cleaned))
+		if err != nil || !strings.HasPrefix(target, tmpPrefix) {
 			continue
 		}
 		if f.FileInfo().IsDir() {

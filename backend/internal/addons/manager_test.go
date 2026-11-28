@@ -119,3 +119,47 @@ func TestUploadZipNormalizesGitHubBranchSuffix(t *testing.T) {
 		t.Fatalf("expected normalized module name sintaksa_branding, got %+v", repo.Modules)
 	}
 }
+
+func TestExtractZipSafe(t *testing.T) {
+	t.Run("rejects path traversal", func(t *testing.T) {
+		dir := t.TempDir()
+		zipPath := filepath.Join(dir, "evil.zip")
+		zf, err := os.Create(zipPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zw := zip.NewWriter(zf)
+		w, _ := zw.Create("../../evil.txt")
+		_, _ = w.Write([]byte("pwn"))
+		zw.Close()
+		zf.Close()
+
+		dest := filepath.Join(dir, "out")
+		if err := extractZipSafe(zipPath, dest); err == nil {
+			t.Fatalf("expected error for zip slip entry, got nil")
+		}
+	})
+
+	t.Run("allows root dot entry and double-dot in filename", func(t *testing.T) {
+		dir := t.TempDir()
+		zipPath := filepath.Join(dir, "safe.zip")
+		zf, err := os.Create(zipPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zw := zip.NewWriter(zf)
+		_, _ = zw.Create("./")
+		w, _ := zw.Create("my..addon/__manifest__.py")
+		_, _ = w.Write([]byte("{'name': 'Safe'}"))
+		zw.Close()
+		zf.Close()
+
+		dest := filepath.Join(dir, "out")
+		if err := extractZipSafe(zipPath, dest); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(dest, "my..addon", "__manifest__.py")); err != nil {
+			t.Fatalf("expected extracted file to exist: %v", err)
+		}
+	})
+}
