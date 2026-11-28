@@ -514,9 +514,9 @@ func (m *Manager) writeConfigFiles(inst models.OdooInstance) error {
 		filepath.Join(base, "prometheus", "prometheus.yml"):                             m.buildPrometheusConfig(inst),
 		filepath.Join(base, "pg_exporter", "postgres_exporter.yml"):                   m.buildPGExporterConfig(inst),
 		filepath.Join(base, "grafana", "provisioning", "datasources", "prometheus.yml"): grafanaDatasourceYAML(prom),
-		filepath.Join(base, "grafana", "provisioning", "dashboards", "dashboards.yml"):  grafanaDashboardsProviderYAML(),
-		filepath.Join(base, "grafana", "dashboards", "odoo-apps.json"):                odooAppsDashboardJSON(),
-		filepath.Join(base, "grafana", "dashboards", "postgresql.json"):               postgresqlDashboardJSON(),
+		filepath.Join(base, "grafana", "provisioning", "dashboards", "dashboards.yml"):  grafanaDashboardsProviderYAML(inst.Name),
+		filepath.Join(base, "grafana", "dashboards", "odoo-apps.json"):                odooAppsDashboardJSON(inst.Name),
+		filepath.Join(base, "grafana", "dashboards", "postgresql.json"):               postgresqlDashboardJSON(inst.Name),
 	}
 	for p, content := range files {
 		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {

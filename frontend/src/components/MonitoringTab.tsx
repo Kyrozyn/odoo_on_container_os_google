@@ -365,10 +365,10 @@ export function MonitoringTab({
 
   const grafanaBase = resolveGrafanaUrl(status!.primaryUrl)
   const odooDashUrl = grafanaBase
-    ? `${grafanaBase}/d/runodoo-odoo-apps/runodoo-odoo-apps-monitoring?var-instance=${encodeURIComponent(instance.name)}`
+    ? `${grafanaBase}/d/runodoo-odoo-apps?var-instance=${encodeURIComponent(instance.name)}`
     : ''
   const pgDashUrl = grafanaBase
-    ? `${grafanaBase}/d/runodoo-postgresql/runodoo-postgresql-database-monitoring?var-instance=${encodeURIComponent(instance.name)}`
+    ? `${grafanaBase}/d/runodoo-postgresql?var-instance=${encodeURIComponent(instance.name)}`
     : ''
 
   return (

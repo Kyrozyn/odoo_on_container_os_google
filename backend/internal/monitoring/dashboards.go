@@ -15,25 +15,26 @@ datasources:
 `, promContainer)
 }
 
-func grafanaDashboardsProviderYAML() string {
-	return `apiVersion: 1
+func grafanaDashboardsProviderYAML(instanceName string) string {
+	folder := instanceName + "-RunOdoo"
+	return fmt.Sprintf(`apiVersion: 1
 providers:
-  - name: RunOdoo
+  - name: %s
     orgId: 1
-    folder: RunOdoo
+    folder: %s
     type: file
     disableDeletion: false
     editable: true
     updateIntervalSeconds: 30
     options:
       path: /var/lib/grafana/dashboards
-`
+`, folder, folder)
 }
 
-func odooAppsDashboardJSON() string {
-	return `{
+func odooAppsDashboardJSON(instanceName string) string {
+	return fmt.Sprintf(`{
   "uid": "runodoo-odoo-apps",
-  "title": "RunOdoo - Odoo Apps Monitoring",
+  "title": "%s-RunOdoo - Odoo Apps Monitoring",
   "tags": ["runodoo", "odoo"],
   "timezone": "browser",
   "schemaVersion": 39,
@@ -183,13 +184,13 @@ func odooAppsDashboardJSON() string {
     }
   ]
 }
-`
+`, instanceName)
 }
 
-func postgresqlDashboardJSON() string {
-	return `{
+func postgresqlDashboardJSON(instanceName string) string {
+	return fmt.Sprintf(`{
   "uid": "runodoo-postgresql",
-  "title": "RunOdoo - PostgreSQL Database Monitoring",
+  "title": "%s-RunOdoo - PostgreSQL Database Monitoring",
   "tags": ["runodoo", "postgresql"],
   "timezone": "browser",
   "schemaVersion": 39,
@@ -356,5 +357,5 @@ func postgresqlDashboardJSON() string {
     }
   ]
 }
-`
+`, instanceName)
 }
