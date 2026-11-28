@@ -49,7 +49,6 @@ export function InstanceDetail({
   const [confRows, setConfRows] = useState<{ key: string; value: string }[]>([])
   const [bulkConfMode, setBulkConfMode] = useState(false)
   const [bulkConfText, setBulkConfText] = useState('')
-  const [customConf, setCustomConf] = useState('')
   const [newDomain, setNewDomain] = useState('')
   const [showCreateDb, setShowCreateDb] = useState(false)
   const [upgradeDb, setUpgradeDb] = useState('')
@@ -94,7 +93,6 @@ export function InstanceDetail({
     try {
       const data = await api.getInstance(instanceId)
       setInst(data)
-      setCustomConf(data.customConf || '')
       if (data.status === 'running') {
         api.instanceStats(instanceId).then(setStats).catch(() => {})
       }
@@ -381,7 +379,6 @@ export function InstanceDetail({
       }
       setConfRows(rows)
       setBulkConfText(rowsToBulkText(rows))
-      setCustomConf(c.customConf || '')
     } catch {
       // ignore
     }
@@ -399,9 +396,6 @@ export function InstanceDetail({
   const buildLiveConfPreview = () => {
     const rows = bulkConfMode ? bulkTextToRows(bulkConfText) : confRows
     const lines = ['[options]', ...rows.filter((r) => r.key.trim()).map((r) => `${r.key.trim()} = ${r.value}`)]
-    if (customConf.trim()) {
-      lines.push('', '# Additional custom directives', customConf.trim())
-    }
     return lines.join('\n')
   }
 
@@ -416,7 +410,6 @@ export function InstanceDetail({
       }
       await api.updateInstance(inst.id, {
         confOptions,
-        customConf,
         redeploy,
       })
       notify(redeploy ? 'Config saved & redeployment started...' : 'odoo.conf saved!')
@@ -1949,24 +1942,8 @@ export function InstanceDetail({
                   </button>
                 </div>
               )}
-            </div>
 
-            {/* Additional Custom Directives */}
-            <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900">Additional Custom Directives</h3>
-                <p className="text-xs text-slate-500">
-                  Tambahkan directive khusus di luar opsi standar (akan ditambahkan di bagian akhir <code className="bg-slate-100 px-1 rounded">odoo.conf</code>).
-                </p>
-              </div>
-              <textarea
-                rows={5}
-                value={customConf}
-                onChange={(e) => setCustomConf(e.target.value)}
-                placeholder="Contoh:&#10;dbfilter = ^%h$&#10;log_level = info&#10;without_demo = all"
-                className="w-full rounded-lg border border-slate-300 p-3 font-mono text-xs focus:border-[#714B67] focus:outline-none"
-              />
-              <div className="flex flex-wrap gap-2 pt-1">
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   disabled={busy}
