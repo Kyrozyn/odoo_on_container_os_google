@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import {
   AlertCircle,
   ArrowLeft,
@@ -124,6 +125,15 @@ export function InstanceDetail({
     refreshDeployStatus()
     api.getSettings().then(setSettings).catch(() => {})
   }, [instanceId])
+
+  useAutoRefresh(
+    async () => {
+      const s = await api.instanceStats(instanceId)
+      setStats(s)
+    },
+    5000,
+    inst?.status === 'running'
+  )
 
   useEffect(() => {
     if (!deploy || deploy.status !== 'deploying') return

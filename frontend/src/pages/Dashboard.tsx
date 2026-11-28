@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import {
   Activity,
   Box,
@@ -55,6 +56,12 @@ export function Dashboard({
   useEffect(() => {
     load()
   }, [])
+
+  useAutoRefresh(async () => {
+    const [s, insts] = await Promise.all([api.systemInfo(), api.listInstances()])
+    setSysInfo(s)
+    setInstances(insts)
+  }, 5000)
 
   const handleSaveRootDomain = async (e: React.FormEvent) => {
     e.preventDefault()

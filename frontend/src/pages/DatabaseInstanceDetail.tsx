@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { useAutoRefresh } from '../hooks/useAutoRefresh'
 import {
   Activity,
   AlertTriangle,
@@ -72,6 +73,15 @@ export function DatabaseInstanceDetail({
   useEffect(() => {
     loadAll()
   }, [instance.id])
+
+  useAutoRefresh(
+    async () => {
+      const mRes = await api.getPostgresMetrics(instance.id)
+      setMetrics(mRes)
+    },
+    5000,
+    !busyAction
+  )
 
   const modifiedUpdates: Record<string, string> = {}
   for (const s of settings) {
